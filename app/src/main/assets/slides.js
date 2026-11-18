@@ -590,14 +590,16 @@
   // Kindroid's bubbles are always solid (its "Immersive" preset only brightens the background
   // and fades the top of the chat). Classes are CSS-module hashes: matched by their local names
   // (…_bubble-self / …_bubble-other), leaving out bare ones (pictures, videos, voice notes).
-  var BUBBLES = {glass: {keep: 55, blur: 6}, clear: {keep: 25, blur: 10}};
+  // No blur behind them: the owner wants the picture clear through the box ("not blurry").
+  // A soft shadow under the words keeps them readable on busy pictures.
+  var BUBBLES = {glass: {keep: 55, shadow: 0.45}, clear: {keep: 25, shadow: 0.7}};
 
   function bubbleCss(b) {
     var rule = function (side, color) {
       return '[class*="_bubble-' + side + '"]:not([class*="_bubble-bare"]):not([class*="_bubble-wrap"]){' +
         'background:color-mix(in srgb, ' + color + ' ' + b.keep + '%, transparent) !important;' +
-        '-webkit-backdrop-filter:blur(' + b.blur + 'px);backdrop-filter:blur(' + b.blur + 'px);' +
-        'text-shadow:0 1px 2px rgba(0,0,0,0.35);}';
+        '-webkit-backdrop-filter:none !important;backdrop-filter:none !important;' +
+        'text-shadow:0 1px 3px rgba(0,0,0,' + b.shadow + ');}';
     };
     return rule('other', 'var(--chat-message-color-other, var(--chat-message-surface-other, #1b1a1c))') +
       rule('self', 'var(--chat-message-color-self, var(--color-cta, #964f43))');

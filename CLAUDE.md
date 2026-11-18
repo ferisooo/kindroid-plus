@@ -80,7 +80,8 @@ or (for a Kin looked through before) 24 known ones in a row. At most every 6 h
 per Kin (prefs `gathered_at:<kin>`), stopped when the app leaves.
 Speeds 1 s to 5 min (ticks every 250 ms; the crossfade is under half a slide).
 **See-through message boxes** (pop-up "Message boxes": Solid / See-through 55%
-+ 6 px blur (default) / Very see-through 25% + 10 px): a <style id="kp-bubbles">
+(default) / Very see-through 25%; no blur, the owner found the blur made it
+look blurry; a text shadow keeps the words readable): a <style id="kp-bubbles">
 that mixes the bubble's own colour with transparent, matched by
 `[class*="_bubble-self"]` / `-other`, not bare or wrap ones. Random (every one once before repeats),
 newest or oldest first; 5 s to 5 min. It reads the list again every 10 min.
