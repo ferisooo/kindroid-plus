@@ -190,6 +190,25 @@ words unreadable over a selfie. The PC session's emulator lost its Kindroid logi
 updating 7 → 10, but only "Forgot?" touches the login in this app and it wipes
 everything (other site data was still there), so the cause wasn't found here.
 
+## The chat's bars (Bars tile: Slim / Clear / Hide, all on by default)
+
+The 🖼 pop-up is a 3 by 3 grid of same-size tiles (`tile`, `menu`): Order,
+Speed, Boxes / Show, ⭐ Favorites, 📱 Pictures / ✨ AI ideas, Bars, 🔒 Lock.
+From kindroid.ai (mapped and tried live by the PC session): top
+`…_header-overlay > header.…_row-wallpaper` (dark glass, 44 px buttons), bottom
+`…_input-overlay > …_wrapper-wallpaper > …_bar` (Message box, + / wand / mic,
+"Chatting as"); both overlay a full-height list that keeps room for them
+itself (a ResizeObserver on the composer). `<style id="kp-bars">`: Slim (less
+padding, 36 px buttons and avatar), Clear (no glass or blur, words and icons
+with a shadow, buttons a faint dark disc), and `html.kp-bars-away` slides both
+off with the separate CSS `translate` (adds to Kindroid's own keyboard lift).
+`barsTick`: away after 4 s without a touch; never while typing (focus or text
+in the Message box, `kb-open`, composer data-attributes), recording, a reply
+coming (button labels), attachments, a sheet or the Kin's menu; a new message
+brings them back; while away a tap brings them back and is swallowed (it
+doesn't open a message), a scroll leaves them away; the 💬 pill and the 🖼
+button hide with them.
+
 ## Shorter voice bars
 
 Kindroid's voice player (module eArjsW_: `…_card` in a `…_voice-drawer` with

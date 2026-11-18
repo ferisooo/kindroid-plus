@@ -930,6 +930,122 @@
       rule('self', 'var(--chat-message-color-self, var(--color-cta, #964f43))');
   }
 
+  // ---- The chat's top and bottom bars: slimmer, see-through, slide away while looking ----
+  // From kindroid.ai (checked live by the owner's PC session): both bars are overlays on a
+  // full-height message list. Top: …_header-overlay > header.…_row-wallpaper (69 px, dark glass).
+  // Bottom: …_input-overlay > …_wrapper-wallpaper > …_bar (118 px) holding the Message box,
+  // + / wand / mic buttons and "Chatting as". The list keeps room for them itself (a
+  // ResizeObserver on the composer), so slimmer bars reflow it; hidden ones leave their room
+  // (no jump when they come back). Hiding uses the separate CSS `translate`, so it adds to
+  // Kindroid's own moves (the keyboard lift). They never hide while typing, recording, a reply
+  // is coming, or a sheet or menu is open; a tap brings them back (and does nothing else).
+  var HEAD = 'header[class*="_row-wallpaper"]';
+  var BAR = '[class*="_wrapper-wallpaper"] > [class*="_bar"]';
+  var BARS_IDLE_MS = 4000;
+  var bars = {away: false, last: Date.now(), count: -1, swallow: false, downAway: false, x: 0, y: 0, listening: false};
+
+  function barsCss(cfg) {
+    var css = '';
+    if (cfg.barsSlim) {
+      css += HEAD + '{padding:6px 12px !important;}' +
+        HEAD + ' [class*="_icon-button"]{width:36px !important;height:36px !important;min-width:36px !important;}' +
+        HEAD + ' [class*="_hero"],' + HEAD + ' [class*="_avatar-placeholder"]{width:36px !important;height:36px !important;top:6px !important;}' +
+        BAR + '{padding:4px 12px 8px !important;min-height:0 !important;height:auto !important;}' +
+        BAR + ' [class*="_input-row"]{margin:0 !important;row-gap:2px !important;}' +
+        BAR + ' [class*="_attach-button"],' + BAR + ' [class*="_wand-button"],' + BAR + ' [class*="_right-button"]' +
+        '{width:36px !important;height:36px !important;min-width:36px !important;}' +
+        BAR + ' textarea[aria-label="Message"]{padding-top:12px !important;padding-bottom:4px !important;}';
+    }
+    if (cfg.barsClear) {
+      css += HEAD + ',' + BAR + ',[class*="_wrapper-wallpaper"]{background:transparent !important;' +
+        'backdrop-filter:none !important;-webkit-backdrop-filter:none !important;box-shadow:none !important;border-color:transparent !important;}' +
+        HEAD + ' [class*="_name"],' + BAR + ' [class*="_chatting-as"],' + BAR + ' textarea' +
+        '{text-shadow:0 0 2px rgba(0,0,0,.95),0 1px 4px rgba(0,0,0,.9);}' +
+        BAR + ' textarea::placeholder{color:rgba(255,255,255,.8) !important;}' +
+        HEAD + ' [class*="_icon-button"],' + BAR + ' [class*="_base"]{background:rgba(0,0,0,.35) !important;}';
+    }
+    css += 'html.kp-bars-away [class*="_header-overlay"]{translate:0 -110%;opacity:0;pointer-events:none;transition:translate .25s ease,opacity .25s ease;}' +
+      'html.kp-bars-away [class*="_input-overlay"]{translate:0 110%;opacity:0;pointer-events:none;transition:translate .25s ease,opacity .25s ease;}';
+    return css;
+  }
+
+  function styleBars(cfg) {
+    var css = barsCss(cfg), el = document.getElementById('kp-bars');
+    if (!el) {
+      el = document.createElement('style');
+      el.id = 'kp-bars';
+      (document.head || document.documentElement).appendChild(el);
+    }
+    if (el.textContent !== css) el.textContent = css;
+  }
+
+  /** Times the bars must stay: typing, recording, a reply on its way, a sheet or menu open. */
+  function barsBusy() {
+    var html = document.documentElement;
+    if (html.classList.contains('kb-open') || html.classList.contains('v2-sheet-active')) return true;
+    if (document.querySelector('[data-composer-keyboard-open="true"],[data-composer-expanded="true"],[data-header-dragging="true"],' +
+        '[class*="_recorder-row"],[aria-label="Stop recording"],[aria-label="Cancel recording"],[aria-label="Stop generating"],' +
+        '[aria-label="Sending message"],[aria-label="Stop suggested message"],[aria-label="Close attachments"],' +
+        '[aria-expanded="true"][aria-label*="ttachment"]')) return true;
+    var box = document.querySelector('textarea[aria-label="Message"]');
+    if (box && (document.activeElement === box || box.value.trim())) return true;
+    return !!sheetOpen() || chatPeeked();
+  }
+
+  function setAway(away) {
+    if (away === bars.away) return;
+    bars.away = away;
+    document.documentElement.classList.toggle('kp-bars-away', away);
+  }
+
+  function showBars() {
+    bars.last = Date.now();
+    setAway(false);
+  }
+
+  /** A tap while they're away brings them back and does nothing else; a scroll leaves them away. */
+  function listenForBars() {
+    if (bars.listening) return;
+    bars.listening = true;
+    window.addEventListener('pointerdown', function (e) {
+      bars.downAway = bars.away;
+      bars.x = e.clientX;
+      bars.y = e.clientY;
+      if (!bars.away) bars.last = Date.now();
+    }, true);
+    window.addEventListener('pointerup', function (e) {
+      if (!bars.downAway) return;
+      bars.downAway = false;
+      if (Math.abs(e.clientX - bars.x) < 12 && Math.abs(e.clientY - bars.y) < 12) {
+        showBars();
+        bars.swallow = true;
+        setTimeout(function () { bars.swallow = false; }, 600);
+      }
+    }, true);
+    window.addEventListener('click', function (e) {
+      if (!bars.swallow) return;
+      bars.swallow = false;
+      e.preventDefault();
+      e.stopPropagation();
+    }, true);
+    window.addEventListener('keydown', showBars, true);
+  }
+
+  function barsTick(cfg) {
+    styleBars(cfg);
+    if (!cfg.barsHide || !/^\/v2\/chat\//.test(location.pathname)) {
+      setAway(false);
+      return;
+    }
+    listenForBars();
+    // A new message brings them back, so you can answer.
+    var n = document.querySelectorAll('[class*="_bubble-self"], [class*="_bubble-other"]').length;
+    if (bars.count >= 0 && n > bars.count) showBars();
+    bars.count = n;
+    if (barsBusy()) showBars();
+    else if (!bars.away && Date.now() - bars.last > BARS_IDLE_MS) setAway(true);
+  }
+
   // ---- Shorter voice bars ----
   // Kindroid's voice player (CSS module …_card in a …_voice-drawer: ···, ▷, the waveform
   // (role=slider "Seek voice audio", bars counted from its width by a ResizeObserver), 0:00)
@@ -1100,6 +1216,8 @@
     // A box that's under an open sheet (the message box behind the scene sheet) gets none.
     var sheet = sheetOpen();
     if (sheet) boxes = boxes.filter(function (t) { return sheet.contains(t); });
+    // The bars slid away: so does the 💬 pill that sits on the message box.
+    if (bars.away) boxes = boxes.filter(function (t) { return boxKind(t) !== 'reply'; });
     var keep = [];
     boxes.forEach(function (box) {
       var kind = boxKind(box), entry = null;
@@ -1189,7 +1307,7 @@
     }
     // The 🖼 button also keeps out of the way of the Kin's menu (back there works as it is).
     state.peeked = chatPeeked();
-    var covered = open || state.peeked;
+    var covered = open || state.peeked || bars.away;
     if (covered !== state.covered) {
       state.covered = covered;
       try { bridge.cover(covered); } catch (e) {}
@@ -1236,6 +1354,7 @@
     var cfg = config(), key = JSON.stringify(cfg);
     styleBubbles(cfg.bubbles);
     shortVoiceBars();
+    barsTick(cfg);
     makeRoomForPills();
     showIdeasButtons();
     tellSheet();
