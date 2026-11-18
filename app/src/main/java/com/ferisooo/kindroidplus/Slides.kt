@@ -70,6 +70,7 @@ class Slides(
             .put("on", on).put("order", order).put("seconds", seconds).put("bubbles", bubbles)
             .put("photos", showPhotos).put("videos", showVideos).put("mine", showMine).put("mineGen", myPictures.gen)
             .put("favorites", favoritesOnly)
+            .put("barsSlim", barsSlim).put("barsClear", barsClear).put("barsHide", barsHide)
             .toString()
 
         /** My pictures for the slideshow: [{url, at}]. */
@@ -296,82 +297,102 @@ class Slides(
         }
     }
 
+    /** Tiles of the pop-up's grid: their value line, worked out again after any change. */
+    private val tileValues = mutableListOf<Pair<TextView, () -> String>>()
+
+    private fun refreshTiles() = tileValues.forEach { (view, value) -> view.text = value() }
+
+    /**
+     * The "Kindroid+ 💕" pop-up: the slideshow switch, then a 3 by 3 grid of same-size tiles
+     * (each a title and what's chosen; a tap opens its choices), then what was found.
+     */
     private fun openSettings() {
+        tileValues.clear()
         val box = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(6), dp(22), dp(4))
+            setPadding(dp(18), dp(6), dp(18), dp(4))
         }
         var dialog: AlertDialog? = null
+        val close = { dialog?.dismiss() }
         box.addView(Switch(activity).apply {
             text = "Slideshow behind the chat"
             textSize = 16f
             isChecked = on
+            setPadding(dp(4), 0, dp(4), dp(8))
             setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean(ON, checked).apply() }
         })
-        // Three drop-downs side by side: order, speed, and how see-through the message boxes are
-        // (Kindroid's own are always solid).
-        box.addView(LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(6), 0, 0)
-            addView(dropdown("Order", ORDERS, order) { prefs.edit().putString(ORDER, it).apply() }, third())
-            addView(dropdown("Speed", SECONDS_CHOICES.map { Triple(it.toString(), secondsLabel(it), shortSeconds(it)) }, seconds.toString()) {
-                prefs.edit().putInt(SECONDS, it.toInt()).apply()
-            }, third())
-            addView(dropdown("Boxes", BUBBLE_CHOICES, bubbles) { prefs.edit().putString(BUBBLES, it).apply() }, third())
-        })
-        // What takes turns: the Kin's selfie photos, video selfies (moving), and my own pictures.
-        box.addView(heading("Show"))
-        box.addView(pill(showLabel()) { v -> chooseShow(v as TextView) })
-        box.addView(Switch(activity).apply {
-            text = "⭐ Favorites only"
-            textSize = 16f
-            isChecked = favoritesOnly
-            setPadding(0, dp(12), 0, 0)
-            setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean(FAVORITES, checked).apply() }
-        })
-        box.addView(LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(6), 0, 0)
-            addView(pill("⭐ Pick favorites") {
-                dialog?.dismiss()
-                onPage("window.__kpOpenFavorites ? window.__kpOpenFavorites() : false") {
-                    if (it != "true") toast("Open a chat with your Kin first")
+        val tiles = listOf(
+            tile("Order", { ORDERS.first { it.first == order }.third }) { v ->
+                menu(v, ORDERS.map { it.second to (it.first == order) }) { prefs.edit().putString(ORDER, ORDERS[it].first).apply() }
+            },
+            tile("Speed", { shortSeconds(seconds) }) { v ->
+                menu(v, SECONDS_CHOICES.map { secondsLabel(it) to (it == seconds) }) { prefs.edit().putInt(SECONDS, SECONDS_CHOICES[it]).apply() }
+            },
+            tile("Boxes", { BUBBLE_CHOICES.first { it.first == bubbles }.third }) { v ->
+                menu(v, BUBBLE_CHOICES.map { it.second to (it.first == bubbles) }) { prefs.edit().putString(BUBBLES, BUBBLE_CHOICES[it].first).apply() }
+            },
+            tile("Show", { showLabel() }) { chooseShow() },
+            tile("⭐ Favorites", { if (favoritesOnly) "Only ⭐" else "All" }) { v ->
+                menu(v, listOf(
+                    "Show all" to !favoritesOnly,
+                    "⭐ Favorites only" to favoritesOnly,
+                    "⭐ Pick favorites…" to false,
+                    "⭐ Star the one showing" to false,
+                )) { which ->
+                    when (which) {
+                        0, 1 -> prefs.edit().putBoolean(FAVORITES, which == 1).apply()
+                        2 -> {
+                            close()
+                            onPage("window.__kpOpenFavorites ? window.__kpOpenFavorites() : false") {
+                                if (it != "true") toast("Open a chat with your Kin first")
+                            }
+                        }
+                        3 -> onPage("window.__kpStarCurrent ? window.__kpStarCurrent() : 'none'") {
+                            toast(when (it) {
+                                "\"on\"" -> "⭐ Starred!"
+                                "\"off\"" -> "Unstarred"
+                                else -> "Nothing showing yet"
+                            })
+                        }
+                    }
                 }
-            }, half())
-            addView(pill("⭐ Star this one") {
-                onPage("window.__kpStarCurrent ? window.__kpStarCurrent() : 'none'") {
-                    toast(when (it) {
-                        "\"on\"" -> "⭐ Starred!"
-                        "\"off\"" -> "Unstarred"
-                        else -> "Nothing showing yet"
-                    })
+            },
+            tile("📱 Pictures", { myPictures.count().let { if (it == 1) "1 picture" else "$it pictures" } }) { v ->
+                menu(v, listOf("Add pictures…" to false, "See all / take out…" to false)) {
+                    close()
+                    if (it == 0) myPictures.pick() else myPictures.manage()
                 }
-            }, half())
-        })
+            },
+            tile("✨ AI ideas", { ideas.provider?.label?.substringBefore(" (") ?: "Set up" }) { v ->
+                menu(v, listOf("✨ Write a scene…" to false, "💬 What should I say?…" to false, "Your AI and key…" to false)) {
+                    close()
+                    when (it) {
+                        0 -> openIdeasFromMenu("scene")
+                        1 -> openIdeasFromMenu("reply")
+                        else -> ideas.setUp()
+                    }
+                }
+            },
+            tile("Bars", { barsLabel() }) { chooseBars() },
+            tile("🔒 Lock", { lock.kind?.let { if (it == Lock.Kind.PATTERN) "Pattern" else it.label } ?: "Off" }) {
+                close()
+                lock.settings()
+            },
+        )
+        tiles.chunked(3).forEach { row ->
+            box.addView(LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                row.forEach { addView(it, LinearLayout.LayoutParams(0, dp(78), 1f).apply { setMargins(dp(4), dp(4), dp(4), dp(4)) }) }
+            })
+        }
         status()?.let { line ->
             box.addView(TextView(activity).apply {
                 text = line
                 textSize = 13f
                 alpha = 0.7f
-                setPadding(0, dp(14), 0, 0)
+                setPadding(dp(4), dp(10), dp(4), 0)
             })
         }
-        box.addView(heading("📱 My pictures"))
-        box.addView(LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(pill("Add pictures") { dialog?.dismiss(); myPictures.pick() }, half())
-            addView(pill("See all (${myPictures.count()})") { dialog?.dismiss(); myPictures.manage() }, half())
-        })
-        box.addView(heading("✨ AI ideas"))
-        box.addView(small("Tap ✨ on Kindroid's boxes (scene, personality, memories…) or 💬 over the message box."))
-        box.addView(LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(6), 0, 0)
-            addView(pill("Write a scene ✨") { dialog?.dismiss(); openIdeasFromMenu("scene") }, half())
-            addView(pill(ideas.provider?.let { "AI: ${it.label}" } ?: "Set up your AI") { dialog?.dismiss(); ideas.setUp() }, half())
-        })
-        box.addView(heading("🔒 App lock"))
-        box.addView(pill(lock.kind?.let { "Lock: ${it.label} ▾" } ?: "Lock: off ▾") { dialog?.dismiss(); lock.settings() })
         dialog = AlertDialog.Builder(activity, android.R.style.Theme_Material_Dialog_Alert)
             .setTitle("Kindroid+ 💕")
             .setView(ScrollView(activity).apply { addView(box) })
@@ -379,16 +400,61 @@ class Slides(
             .show()
     }
 
-    private fun showLabel(): String {
-        val parts = listOfNotNull(
-            "Photos".takeIf { showPhotos },
-            "Videos".takeIf { showVideos },
-            "My pictures".takeIf { showMine },
-        )
-        return (if (parts.isEmpty()) "Nothing" else parts.joinToString(" · ")) + " ▾"
+    /** One square-ish tile of the grid: a small pink title over what's chosen, and ▾. */
+    private fun tile(title: String, value: () -> String, onTap: (View) -> Unit): View {
+        val words = TextView(activity).apply {
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        tileValues += words to { value() + " ▾" }
+        words.text = value() + " ▾"
+        return LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(4), dp(6), dp(4), dp(6))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(18).toFloat()
+                setColor(Color.argb(0x2A, 0xFF, 0xFF, 0xFF))
+                setStroke(dp(1), Color.argb(0x66, 0xFF, 0x6F, 0xA5))
+            }
+            addView(TextView(activity).apply {
+                text = title
+                textSize = 12f
+                gravity = Gravity.CENTER
+                maxLines = 1
+                setTextColor(Color.rgb(0xFF, 0x6F, 0xA5))
+            })
+            addView(words)
+            setOnClickListener { onTap(it) }
+        }
     }
 
-    private fun chooseShow(button: TextView) {
+    /** A drop-down under a tile; the chosen one has a ✓. Picking saves it and updates the tiles. */
+    private fun menu(anchor: View, items: List<Pair<String, Boolean>>, onPick: (Int) -> Unit) {
+        android.widget.PopupMenu(activity, anchor).apply {
+            items.forEachIndexed { i, (words, chosen) -> menu.add(0, i, i, if (chosen) "✓  $words" else words) }
+            setOnMenuItemClickListener { item ->
+                onPick(item.itemId)
+                refreshTiles()
+                true
+            }
+            show()
+        }
+    }
+
+    private fun showLabel(): String {
+        val parts = listOfNotNull("Photos".takeIf { showPhotos }, "Videos".takeIf { showVideos }, "Mine".takeIf { showMine })
+        return when (parts.size) {
+            0 -> "Nothing"
+            3 -> "All"
+            else -> parts.joinToString(" · ")
+        }
+    }
+
+    private fun chooseShow() {
         val names = arrayOf("Kin's selfie photos", "Kin's video selfies (moving)", "My own pictures")
         val keys = arrayOf(PHOTOS, VIDEOS, MINE)
         val checked = booleanArrayOf(showPhotos, showVideos, showMine)
@@ -396,63 +462,34 @@ class Slides(
             .setTitle("Show in the slideshow")
             .setMultiChoiceItems(names, checked) { _, which, isChecked -> prefs.edit().putBoolean(keys[which], isChecked).apply() }
             .setPositiveButton("Done", null)
-            .setOnDismissListener { button.text = showLabel() }
+            .setOnDismissListener { refreshTiles() }
+            .show()
+    }
+
+    private val barsSlim get() = prefs.getBoolean(BARS_SLIM, true)
+    private val barsClear get() = prefs.getBoolean(BARS_CLEAR, true)
+    private val barsHide get() = prefs.getBoolean(BARS_HIDE, true)
+
+    private fun barsLabel(): String {
+        val parts = listOfNotNull("Slim".takeIf { barsSlim }, "Clear".takeIf { barsClear }, "Hide".takeIf { barsHide })
+        return if (parts.isEmpty()) "Kindroid's" else parts.joinToString(" · ")
+    }
+
+    /** The chat's top and bottom bars: slimmer, see-through, and slide away while you look. */
+    private fun chooseBars() {
+        val names = arrayOf("Slimmer bars", "See-through bars", "Hide them while I look (tap to bring back)")
+        val keys = arrayOf(BARS_SLIM, BARS_CLEAR, BARS_HIDE)
+        val checked = booleanArrayOf(barsSlim, barsClear, barsHide)
+        AlertDialog.Builder(activity, android.R.style.Theme_Material_Dialog_Alert)
+            .setTitle("Top and bottom bars")
+            .setMultiChoiceItems(names, checked) { _, which, isChecked -> prefs.edit().putBoolean(keys[which], isChecked).apply() }
+            .setPositiveButton("Done", null)
+            .setOnDismissListener { refreshTiles() }
             .show()
     }
 
     private fun toast(words: String) = android.widget.Toast.makeText(activity, words, android.widget.Toast.LENGTH_SHORT).show()
 
-    private fun small(words: String) = TextView(activity).apply {
-        text = words
-        textSize = 13f
-        alpha = 0.7f
-    }
-
-    private fun third() = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(3); marginEnd = dp(3) }
-
-    private fun half() = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(3); marginEnd = dp(3) }
-
-    /** A rounded button. */
-    private fun pill(words: String, onTap: (View) -> Unit) = TextView(activity).apply {
-        text = words
-        textSize = 14f
-        setTextColor(Color.WHITE)
-        gravity = Gravity.CENTER
-        maxLines = 1
-        ellipsize = android.text.TextUtils.TruncateAt.END
-        setPadding(dp(8), dp(11), dp(8), dp(11))
-        background = GradientDrawable().apply {
-            cornerRadius = dp(22).toFloat()
-            setColor(Color.argb(0x33, 0xFF, 0xFF, 0xFF))
-            setStroke(dp(1), Color.argb(0x66, 0xFF, 0x6F, 0xA5))
-        }
-        setOnClickListener { onTap(it) }
-    }
-
-    /**
-     * A small title with a drop-down button under it. [options]: (key, words in the list,
-     * short words on the button). Picking one saves it at once.
-     */
-    private fun dropdown(title: String, options: List<Triple<String, String, String>>, picked: String, onPick: (String) -> Unit): View {
-        val column = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-        column.addView(heading(title).apply { gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(4)) })
-        val shown = options.firstOrNull { it.first == picked } ?: options.first()
-        column.addView(pill("${shown.third} ▾") { v ->
-            android.widget.PopupMenu(activity, v).apply {
-                options.forEachIndexed { i, o -> menu.add(0, i, i, o.second) }
-                setOnMenuItemClickListener { item ->
-                    val o = options[item.itemId]
-                    onPick(o.first)
-                    (v as TextView).text = "${o.third} ▾"
-                    true
-                }
-                show()
-            }
-        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        return column
-    }
-
-    /** What the page found last time, for the bottom of the pop-up. */
     private fun status(): String? {
         val json = runCatching { JSONObject(lastReport) }.getOrNull()
         val lines = mutableListOf<String>()
@@ -505,6 +542,9 @@ class Slides(
         private const val VIDEOS = "videos"
         private const val MINE = "mine"
         private const val FAVORITES = "favorites"
+        private const val BARS_SLIM = "bars_slim"
+        private const val BARS_CLEAR = "bars_clear"
+        private const val BARS_HIDE = "bars_hide"
         private const val BUTTON_AT = "button_at"
         private const val GATHERED_AT = "gathered_at:"
         private const val RESTING_ALPHA = 0.75f
