@@ -178,6 +178,15 @@ tries came out nearly the same (build 8). DeepSeek also gets temperature 1.3
 settings). The Kin's name is the innermost visible `…_name` in the header
 (an outer one read "avaava").
 
+Fixed after the PC session's build 10 test: the ✨ pill covered the last line of
+big boxes, so those boxes get `padding-bottom: 46px` (`<style
+id="kp-ideas-room">`) and the pill sits in that room; the 🖼 button also hides
+while the Kin's menu has the chat card peeked aside (`[class*="_card-peeked"]`,
+`bridge.cover`; back there is left as Kindroid has it); "Remove key" only shows
+when a key is saved. The PC session's emulator lost its Kindroid login after
+updating 7 → 10, but only "Forgot?" touches the login in this app and it wipes
+everything (other site data was still there), so the cause wasn't found here.
+
 ## Shorter voice bars
 
 Kindroid's voice player (module eArjsW_: `…_card` in a `…_voice-drawer` with

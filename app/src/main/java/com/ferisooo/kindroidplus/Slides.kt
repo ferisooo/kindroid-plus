@@ -85,6 +85,15 @@ class Slides(
             }
         }
 
+        /** Something of Kindroid's covers the chat (a sheet, or the Kin's menu): the 🖼 button hides. */
+        @JavascriptInterface
+        fun cover(hide: Boolean) {
+            activity.runOnUiThread {
+                covered = hide
+                pageChanged(lastUrl)
+            }
+        }
+
         /** A ✨ button on one of Kindroid's boxes: what the page knows about the box and the chat. */
         @JavascriptInterface
         fun ideas(json: String) {
@@ -231,12 +240,13 @@ class Slides(
     /** Whether one of Kindroid's sheets is open on the page (then the 🖼 button keeps out of its way). */
     var sheetOpen = false
         private set
+    private var covered = false
     private var lastUrl: String? = null
 
     /** The button only shows in a Kin's chat (not group chats or other pages), and not over a sheet. */
     fun pageChanged(url: String?) {
         lastUrl = url
-        button.visibility = if (isKinChat(url) && !sheetOpen) View.VISIBLE else View.GONE
+        button.visibility = if (isKinChat(url) && !sheetOpen && !covered) View.VISIBLE else View.GONE
     }
 
     /** The phone's back button with a sheet open: closes the sheet instead of leaving the chat. */

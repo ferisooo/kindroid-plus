@@ -38,7 +38,7 @@
     'blocked_for_native_policy', 'native_sfw_policy'];
 
   var lists = {};  // kin id -> {photos, videos, at, loading, problem, soon, videoProblem}
-  var state = {cfg: '', kin: null, pos: -1, bag: [], shown: null, nextAt: 0, busy: false, failed: 0, noPass: 0, gatheredAt: 0, sheet: null};  // sheet: null until first told, so a new page always says
+  var state = {cfg: '', kin: null, pos: -1, bag: [], shown: null, nextAt: 0, busy: false, failed: 0, noPass: 0, gatheredAt: 0, sheet: null, covered: null};  // sheet: null until first told, so a new page always says
   var box = null, layers = [], front = 0;
 
   function config() {
@@ -963,6 +963,20 @@
     'kin-away-directive-v2': ['Away Directive', 'how your Kin should behave when reaching out on their own']
   };
 
+  /**
+   * Room at the bottom of the boxes that get a ✨ pill, so it never covers the last line of
+   * text (the PC session saw it covering words in Personality and Key Memories).
+   */
+  function makeRoomForPills() {
+    if (document.getElementById('kp-ideas-room')) return;
+    var boxes = Object.keys(FIELDS_BY_ID).map(function (id) { return 'textarea#' + id; })
+      .concat(['textarea#kin-scene-v2', 'textarea[maxlength="160"]', 'textarea[class*="_suggestion-input"]']);
+    var el = document.createElement('style');
+    el.id = 'kp-ideas-room';
+    el.textContent = boxes.join(',') + '{padding-bottom:46px !important;}';
+    (document.head || document.documentElement).appendChild(el);
+  }
+
   function isSceneBox(t) {
     var hint = (t.getAttribute('placeholder') || '').toLowerCase();
     return t.id === 'kin-scene-v2' || t.getAttribute('maxlength') === '160' || /attire/.test(hint) ||
@@ -1137,11 +1151,25 @@
     return null;
   }
 
+  /** The Kin's menu (tap the avatar): the chat card slides aside, "peeked". */
+  function chatPeeked() {
+    var spots = document.querySelectorAll('[class*="_card-peeked"]');
+    for (var i = 0; i < spots.length; i++) if (spots[i].getBoundingClientRect().width > 0) return true;
+    return false;
+  }
+
   function tellSheet() {
     var open = !!sheetOpen();
-    if (open === state.sheet) return;
-    state.sheet = open;
-    try { bridge.sheet(open); } catch (e) {}
+    if (open !== state.sheet) {
+      state.sheet = open;
+      try { bridge.sheet(open); } catch (e) {}
+    }
+    // The 🖼 button also keeps out of the way of the Kin's menu (back there works as it is).
+    var covered = open || chatPeeked();
+    if (covered !== state.covered) {
+      state.covered = covered;
+      try { bridge.cover(covered); } catch (e) {}
+    }
   }
 
   /** Back with a sheet open: Escape (what sheets close on), then its close button, then back. */
@@ -1184,6 +1212,7 @@
     var cfg = config(), key = JSON.stringify(cfg);
     styleBubbles(cfg.bubbles);
     shortVoiceBars();
+    makeRoomForPills();
     showIdeasButtons();
     tellSheet();
     if (key !== state.cfg) {

@@ -52,6 +52,7 @@ class Ideas(private val activity: Activity, private val putInBox: (String, Strin
 
     /** Pick the AI and type its key. Checks the key works before keeping it. */
     fun setUp(then: (() -> Unit)? = null) {
+        var showRemove: () -> Unit = {}
         var picked = Ai.Provider.of(prefs.getString(PROVIDER, null)) ?: Ai.Provider.CLAUDE
         val box = column()
         box.addView(small("Use your own AI key. It stays on this phone and only goes to that AI company. Using it may cost you a little on your AI account."))
@@ -75,6 +76,7 @@ class Ideas(private val activity: Activity, private val putInBox: (String, Strin
                     (v as TextView).text = "${picked.label} ▾"
                     keyBox.setText(keyFor(picked))
                     modelBox.setText(typedModel(picked))
+                    showRemove()
                     true
                 }
                 show()
@@ -97,10 +99,15 @@ class Ideas(private val activity: Activity, private val putInBox: (String, Strin
             .setNegativeButton("Cancel", null)
             .setNeutralButton("Remove key", null)
             .show()
-        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+        // "Remove key" only shows when this AI has a key saved.
+        val remove = dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
+        showRemove = { remove.visibility = if (keyFor(picked).isNotEmpty()) View.VISIBLE else View.GONE }
+        showRemove()
+        remove.setOnClickListener {
             prefs.edit().remove(KEY + picked.key).remove(PICKED + picked.key).apply()
             keyBox.setText("")
             status.text = "Key removed from this phone."
+            showRemove()
         }
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             val key = keyBox.text.toString().trim()
