@@ -250,11 +250,17 @@ class Slides(
         button.visibility = if (isKinChat(url) && !sheetOpen && !covered) View.VISIBLE else View.GONE
     }
 
-    /** The phone's back button with a sheet open: closes the sheet instead of leaving the chat. */
-    fun closeSheet(web: WebView) {
-        web.evaluateJavascript("window.__kpCloseSheet ? window.__kpCloseSheet() : false") { done ->
-            if (done != "true" && web.canGoBack()) web.goBack()
-        }
+    /**
+     * The phone's back button: the page first closes what's open on it (a sheet, the Kin's
+     * menu); [otherwise] runs when there was nothing to close.
+     */
+    fun back(web: WebView, otherwise: () -> Unit) {
+        web.evaluateJavascript("window.__kpBack ? window.__kpBack() : false") { done -> if (done != "true") otherwise() }
+    }
+
+    /** One of the app's own pop-ups opened or closed: the chat's bars stay while it's open. */
+    fun hold(held: Boolean) {
+        page?.evaluateJavascript("window.__kpHold && window.__kpHold($held)", null)
     }
 
     private fun room(): Float = (root.height - root.paddingTop - root.paddingBottom - button.height).coerceAtLeast(0).toFloat()

@@ -352,11 +352,10 @@ class MainActivity : Activity() {
         when {
             window != null && window.canGoBack() -> window.goBack()
             window != null -> closePopup()
-            // A Kindroid sheet (the gallery, the scene…) adds no page to go back from: close it.
-            slides.sheetOpen -> slides.closeSheet(web)
-            web.canGoBack() -> web.goBack()
-            // Hides the app instead of closing it, so it opens again at once, still on the same page.
-            else -> moveTaskToBack(true)
+            // A Kindroid sheet (the gallery, the scene…) or the Kin's menu adds no page to go back
+            // from: the page closes it. Otherwise back a page, or hide the app (instead of closing
+            // it, so it opens again at once, still on the same page).
+            else -> slides.back(web) { if (web.canGoBack()) web.goBack() else moveTaskToBack(true) }
         }
     }
 
@@ -422,6 +421,12 @@ class MainActivity : Activity() {
         java.io.File(filesDir, "mine").deleteRecursively()
         Toast.makeText(this, "Starting over… log in to Kindroid again 💕", Toast.LENGTH_LONG).show()
         root.postDelayed({ recreate() }, 800)
+    }
+
+    /** A pop-up of the app's own (settings, AI, lock…) takes the focus: tell the page while it's open. */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        slides.hold(!hasFocus)
     }
 
     override fun onResume() {

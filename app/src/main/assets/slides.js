@@ -976,7 +976,8 @@
         HEAD + ' [class*="_icon-button"],' + BAR + ' [class*="_base"]{background:rgba(0,0,0,.35) !important;}';
     }
     css += 'html.kp-bars-away [class*="_header-overlay"]{translate:0 -110%;opacity:0;pointer-events:none;transition:translate .25s ease,opacity .25s ease;}' +
-      'html.kp-bars-away [class*="_input-overlay"]{translate:0 110%;opacity:0;pointer-events:none;transition:translate .25s ease,opacity .25s ease;}';
+      'html.kp-bars-away [class*="_input-overlay"]{translate:0 110%;opacity:0;pointer-events:none;transition:translate .25s ease,opacity .25s ease;}' +
+      'html.kp-bars-away [class*="_header-overlay"] *,html.kp-bars-away [class*="_input-overlay"] *{pointer-events:none !important;}';
     return css;
   }
 
@@ -1042,6 +1043,12 @@
     window.addEventListener('keydown', showBars, true);
   }
 
+  /** The app's own pop-ups (the page can't see them): bars stay while one is open. */
+  window.__kpHold = function (held) {
+    bars.held = !!held;
+    showBars();
+  };
+
   function barsTick(cfg) {
     styleBars(cfg);
     if (!cfg.barsHide || !/^\/v2\/chat\//.test(location.pathname)) {
@@ -1053,7 +1060,7 @@
     var n = document.querySelectorAll('[class*="_bubble-self"], [class*="_bubble-other"]').length;
     if (bars.count >= 0 && n > bars.count) showBars();
     bars.count = n;
-    if (barsBusy()) showBars();
+    if (bars.held || barsBusy()) showBars();
     else if (!bars.away && Date.now() - bars.last > BARS_IDLE_MS) setAway(true);
   }
 
@@ -1112,20 +1119,6 @@
     'kin-call-directive-v2': ['Call Directive', 'how your Kin should behave on voice calls'],
     'kin-away-directive-v2': ['Away Directive', 'how your Kin should behave when reaching out on their own']
   };
-
-  /**
-   * Room at the bottom of the boxes that get a ✨ pill, so it never covers the last line of
-   * text (the PC session saw it covering words in Personality and Key Memories).
-   */
-  function makeRoomForPills() {
-    if (document.getElementById('kp-ideas-room')) return;
-    var boxes = Object.keys(FIELDS_BY_ID).map(function (id) { return 'textarea#' + id; })
-      .concat(['textarea#kin-scene-v2', 'textarea[maxlength="160"]', 'textarea[class*="_suggestion-input"]']);
-    var el = document.createElement('style');
-    el.id = 'kp-ideas-room';
-    el.textContent = boxes.join(',') + '{padding-bottom:46px !important;}';
-    (document.head || document.documentElement).appendChild(el);
-  }
 
   function isSceneBox(t) {
     var hint = (t.getAttribute('placeholder') || '').toLowerCase();
@@ -1244,14 +1237,29 @@
         }, true);
         document.body.appendChild(button);
       }
-      var r = box.getBoundingClientRect(), b = entry.button;
+      var r = box.getBoundingClientRect(), b = entry.button, w = b.offsetWidth || 90, h = b.offsetHeight || 30;
       b.style.display = '';
+      var counter = kind === 'reply' ? null : counterOf(box);
       if (kind === 'reply') {
         b.style.top = Math.max(0, r.top - 40) + 'px';
         b.style.left = Math.max(4, r.right - (b.offsetWidth || 130)) + 'px';
+      } else if (counter) {
+        // In the box's own title row, just left of its "N/2500" counter: never over the words,
+        // even in a long box that scrolls (the PC session saw it covering text there). Small,
+        // to fit the row.
+        if (b.style.fontSize !== '12px') {
+          b.style.fontSize = '12px';
+          b.style.padding = '3px 10px';
+          w = b.offsetWidth || 70;
+          h = b.offsetHeight || 22;
+        }
+        var c = counter.getBoundingClientRect();
+        b.style.top = Math.max(0, c.top + c.height / 2 - h / 2) + 'px';
+        b.style.left = Math.max(0, c.left - w - 10) + 'px';
       } else {
-        b.style.top = Math.max(0, r.bottom - 38) + 'px';
-        b.style.left = Math.max(0, r.right - (b.offsetWidth || 90) - 8) + 'px';
+        // No counter found: just under the box, at its right.
+        b.style.top = Math.max(0, r.bottom + 6) + 'px';
+        b.style.left = Math.max(0, r.right - w) + 'px';
       }
       keep.push(entry);
     });
@@ -1260,6 +1268,35 @@
     });
     ideaPool = keep;
   }
+
+  /** The box's "N/2500" character counter (Kindroid shows one in each box's title row), or null. */
+  function counterOf(box) {
+    var card = box.parentElement;
+    for (var up = 0; card && up < 4; up++, card = card.parentElement) {
+      var all = card.querySelectorAll('span, div, p, small');
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        if (el.children.length || el.contains(box)) continue;
+        if (/^\s*\d+\s*\/\s*\d+\s*$/.test(el.textContent || '') && el.getBoundingClientRect().width > 0) return el;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The phone's back button: closes what's open on the page first. A sheet (Escape, then a
+   * close button, then back); the Kin's menu (its own "tap to close" on the chat card, else
+   * Escape, then back). Gives true when it closed something, so the app does nothing else.
+   */
+  window.__kpBack = function () {
+    if (sheetOpen()) return window.__kpCloseSheet();
+    if (!chatPeeked()) return false;
+    var close = document.querySelector('[class*="_card-tap-close"]');
+    if (close) close.click();
+    else document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true}));
+    setTimeout(function () { if (chatPeeked()) history.back(); }, 350);
+    return true;
+  };
 
   /** Puts [text] in a box the way typing would (React only hears an "input" event). */
   function putIn(t, text) {
@@ -1366,7 +1403,6 @@
     styleBubbles(cfg.bubbles);
     shortVoiceBars();
     barsTick(cfg);
-    makeRoomForPills();
     showIdeasButtons();
     tellSheet();
     if (key !== state.cfg) {

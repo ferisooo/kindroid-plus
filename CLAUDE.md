@@ -180,9 +180,10 @@ tries came out nearly the same (build 8). DeepSeek also gets temperature 1.3
 settings). The Kin's name is the innermost visible `…_name` in the header
 (an outer one read "avaava").
 
-Fixed after the PC session's build 10 test: the ✨ pill covered the last line of
-big boxes, so those boxes get `padding-bottom: 46px` (`<style
-id="kp-ideas-room">`) and the pill sits in that room; the 🖼 button also hides
+Fixed after the PC session's build 10 and 15 tests: the ✨ pill covered text in
+big boxes (padding-bottom didn't help in a box that scrolls), so it now sits in
+the box's own title row, just left of its "N/2500" counter (`counterOf`), small
+(12 px); with no counter, just under the box. The 🖼 button also hides
 while the Kin's menu has the chat card peeked aside (`[class*="_card-peeked"]`,
 `bridge.cover`; back there is left as Kindroid has it); "Remove key" only shows
 when a key is saved. While the Kin's menu is open (chat card peeked), the
@@ -210,6 +211,14 @@ coming (button labels), attachments, a sheet or the Kin's menu; a new message
 brings them back; while away a tap brings them back and is swallowed (it
 doesn't open a message), a scroll leaves them away; the 💬 pill and the 🖼
 button hide with them.
+
+Back (`__kpBack`, from `Slides.back`): closes a sheet (`__kpCloseSheet`) or the
+Kin's menu (its own `…_card-tap-close` on the peeked chat card, else Escape,
+then history.back); only when nothing was open does the app go back a page or
+hide (build 15 hid the app from the Kin's menu). The app's own pop-ups take the
+window focus (`onWindowFocusChanged` → `Slides.hold` → `__kpHold`): the bars
+stay while one is open (they used to slide away behind the 🖼 pop-up and the
+next tap was swallowed). While away, nothing inside the bars takes a touch.
 
 ## Shorter voice bars
 
