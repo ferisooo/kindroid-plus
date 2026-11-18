@@ -41,6 +41,9 @@ class MainActivity : Activity() {
     /** Covers the empty page while Kindroid starts up, so it doesn't look stuck. */
     private lateinit var starting: View
 
+    /** The selfie slideshow behind the chat, and its 🖼 button. */
+    private lateinit var slides: Slides
+
     /** A sign-in window a page opened ("Sign in with Apple" and the like), shown over Kindroid. */
     private var popup: WebView? = null
 
@@ -50,9 +53,11 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         root = FrameLayout(this).apply { setBackgroundColor(BACKGROUND) }
+        slides = Slides(this, root)
 
         web = newPage()
         root.addView(web, 0, FrameLayout.LayoutParams(MATCH, MATCH))
+        root.addView(slides.button, slides.buttonParams())
 
         // A thin line at the top while a page loads.
         loading = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -102,6 +107,7 @@ class MainActivity : Activity() {
         it.settings.offscreenPreRaster = true
         it.webViewClient = MainClient()
         it.webChromeClient = MainChrome()
+        slides.attach(it)
     }
 
     private fun hideStarting() {
@@ -198,8 +204,15 @@ class MainActivity : Activity() {
         }
 
         private fun tidy(view: WebView, url: String) {
-            if (isKindroid(Uri.parse(url).host)) view.evaluateJavascript(TIDY_JS, null)
+            if (!isKindroid(Uri.parse(url).host)) return
+            view.evaluateJavascript(TIDY_JS, null)
+            slides.inject(view)
         }
+
+        override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) = slides.pageChanged(url)
+
+        // Kindroid moves between pages without loading new ones; this hears those moves too.
+        override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) = slides.pageChanged(url)
     }
 
     private inner class MainChrome : WebChromeClient() {
