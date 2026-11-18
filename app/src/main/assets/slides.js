@@ -12,7 +12,9 @@
 //   above Kindroid's, so they sit behind the chat like the real background.
 // - Selfies are in Firestore at Users/<uid>/AIs/<kin id>/Selfies (newest by "timestamp").
 //   They're read with the login Kindroid's own page keeps (firebaseLocalStorageDb), with
-//   Firestore's REST API, read only. Nothing in the account is changed.
+//   Firestore's REST API, read only. Nothing in the account is changed. Kindroid uses
+//   App Check (reCAPTCHA Enterprise), so the page's own App Check token goes along
+//   (firebase-app-check-database); without it Firestore answers 403.
 // - A selfie's url can start with "!enc:": CryptoJS AES with the user's uid as the
 //   passphrase (OpenSSL "Salted__", key from MD5), opened here with the browser's own AES.
 (function () {
@@ -22,7 +24,8 @@
   var bridge = window[KP_BRIDGE];
   var TICK_MS = 1000;
   var REFRESH_MS = 10 * 60 * 1000;  // read the selfies again (new ones show up)
-  var RETRY_MS = 30 * 1000;         // after a failed read
+  var RETRY_MS = 30 * 1000;         // while the login is being renewed
+  var FAILED_WAIT_MS = 5 * 60 * 1000; // after Kindroid turned the read down
   var PAGE = 100;                   // selfies per request
   var MOST = 1000;                  // most selfies kept per Kin
   var FADE_MS = 1200;
@@ -30,7 +33,7 @@
     'blocked_for_native_policy', 'native_sfw_policy'];
 
   var lists = {};  // "<kin>|asc" or "<kin>|desc" -> {urls, at, loading}
-  var state = {cfg: '', kin: null, pos: -1, bag: [], shown: null, nextAt: 0, busy: false, failed: 0};
+  var state = {cfg: '', kin: null, pos: -1, bag: [], shown: null, nextAt: 0, busy: false, failed: 0, noPass: 0};
   var box = null, layers = [], front = 0;
 
   function config() {
@@ -58,46 +61,77 @@
     return {uid: value.uid, token: value.stsTokenManager.accessToken, expires: value.stsTokenManager.expirationTime};
   }
 
-  function readAuth() {
+  /**
+   * Every row of every store in one of the page's own databases, as {found, rows}
+   * (found is false when there's no such database).
+   */
+  function readAll(name) {
     return new Promise(function (resolve) {
-      var done = function (v) { resolve(v || fromLocalStorage()); };
-      var req;
-      try { req = indexedDB.open('firebaseLocalStorageDb'); } catch (e) { done(null); return; }
-      // No such database yet: don't make an empty one (Kindroid's own login would then break).
+      var req, rows = [];
+      try { req = indexedDB.open(name); } catch (e) { resolve({found: false, rows: rows}); return; }
+      // No such database yet: don't make an empty one (Kindroid's own code would then break).
       req.onupgradeneeded = function () { req.transaction.abort(); };
-      req.onerror = function () { done(null); };
+      req.onerror = function () { resolve({found: false, rows: rows}); };
       req.onsuccess = function () {
-        var db = req.result;
+        var db = req.result, names = Array.prototype.slice.call(db.objectStoreNames), left = names.length;
+        var finish = function () { if (--left <= 0) { db.close(); resolve({found: true, rows: rows}); } };
+        if (!left) { db.close(); resolve({found: true, rows: rows}); return; }
         try {
-          var all = db.transaction('firebaseLocalStorage', 'readonly').objectStore('firebaseLocalStorage').getAll();
-          all.onsuccess = function () {
-            var found = null;
-            (all.result || []).forEach(function (row) {
-              if (row && String(row.fbase_key || '').indexOf('firebase:authUser:') === 0) found = fromAuthRow(row.value) || found;
-            });
-            db.close();
-            done(found);
-          };
-          all.onerror = function () { db.close(); done(null); };
+          var tx = db.transaction(names, 'readonly');
+          names.forEach(function (n) {
+            var all = tx.objectStore(n).getAll();
+            all.onsuccess = function () { rows = rows.concat(all.result || []); finish(); };
+            all.onerror = finish;
+          });
         } catch (e) {
           db.close();
-          done(null);
+          resolve({found: true, rows: rows});
         }
       };
     });
   }
 
+  /** Kindroid can keep the login in IndexedDB, localStorage or both: the fresher one wins. */
+  function readAuth() {
+    return readAll('firebaseLocalStorageDb').then(function (db) {
+      var rows = db.rows;
+      var found = fromLocalStorage();
+      rows.forEach(function (row) {
+        var a = row && String(row.fbase_key || '').indexOf('firebase:authUser:') === 0 ? fromAuthRow(row.value) : null;
+        if (a && (!found || (a.expires || 0) > (found.expires || 0))) found = a;
+      });
+      return found;
+    });
+  }
+
+  /**
+   * The page's own App Check pass, as {used, token}: used is whether the page keeps App
+   * Check passes at all, token is a pass that's still good (or null).
+   */
+  function readAppCheck() {
+    return readAll('firebase-app-check-database').then(function (db) {
+      var best = null;
+      db.rows.forEach(function (row) {
+        var v = row && (row.value && typeof row.value === 'object' ? row.value : row);
+        if (v && typeof v.token === 'string' && (v.expireTimeMillis || 0) > Date.now() + 10000 &&
+            (!best || v.expireTimeMillis > best.expireTimeMillis)) best = v;
+      });
+      return {used: db.found, token: best ? best.token : null};
+    });
+  }
+
   function fromLocalStorage() {
+    var found = null;
     try {
       for (var i = 0; i < localStorage.length; i++) {
         var k = localStorage.key(i);
         if (k && k.indexOf('firebase:authUser:') === 0) {
           var a = fromAuthRow(JSON.parse(localStorage.getItem(k)));
-          if (a) return a;
+          if (a && (!found || (a.expires || 0) > (found.expires || 0))) found = a;
         }
       }
     } catch (e) {}
-    return null;
+    return found;
   }
 
   // ---- Opening "!enc:" addresses (CryptoJS's AES with a passphrase) ----
@@ -189,30 +223,57 @@
     return true;
   }
 
-  function fetchSelfies(auth, kin, dir) {
+  /**
+   * Two ways of asking: ours (100 at a time, only the fields used), then, if that's turned
+   * down, exactly the way Kindroid's own gallery asks (12 at a time, whole selfies), in case
+   * Kindroid's database only allows its own kind of question. The one that works is kept.
+   */
+  var SHAPES = [{page: PAGE, select: true}, {page: 12, select: false}];
+  var shapeOk = -1;
+
+  function fetchSelfies(auth, appCheck, kin, dir) {
+    var first = shapeOk >= 0 ? shapeOk : 0;
+    return fetchWith(SHAPES[first], auth, appCheck, kin, dir).then(function (docs) {
+      shapeOk = first;
+      return docs;
+    }, function (e) {
+      if (first !== 0 || !e.refused) throw e;
+      return fetchWith(SHAPES[1], auth, appCheck, kin, dir).then(function (docs) {
+        shapeOk = 1;
+        return docs;
+      }, function (e2) { throw e2.refused ? e : e2; });
+    });
+  }
+
+  function fetchWith(shape, auth, appCheck, kin, dir) {
     var url = 'https://firestore.googleapis.com/v1/projects/kindroid-ai/databases/(default)/documents/Users/' +
       encodeURIComponent(auth.uid) + '/AIs/' + encodeURIComponent(kin) + ':runQuery';
+    var headers = {'Authorization': 'Bearer ' + auth.token, 'Content-Type': 'application/json'};
+    if (appCheck) headers['X-Firebase-AppCheck'] = appCheck;
+    var most = shape.page < PAGE ? 300 : MOST;
     var docs = [];
     function page(after) {
       var q = {
         from: [{collectionId: 'Selfies'}],
-        select: {fields: FIELDS.map(function (f) { return {fieldPath: f}; })},
         orderBy: [{field: {fieldPath: 'timestamp'}, direction: dir === 'asc' ? 'ASCENDING' : 'DESCENDING'}],
-        limit: PAGE
+        limit: shape.page
       };
+      if (shape.select) q.select = {fields: FIELDS.map(function (f) { return {fieldPath: f}; })};
       if (after) q.startAt = {values: [after], before: false};
-      return fetch(url, {
-        method: 'POST',
-        headers: {'Authorization': 'Bearer ' + auth.token, 'Content-Type': 'application/json'},
-        body: JSON.stringify({structuredQuery: q})
-      }).then(function (r) {
-        if (!r.ok) throw new Error('Kindroid said no (' + r.status + ')');
-        return r.json();
+      return fetch(url, {method: 'POST', headers: headers, body: JSON.stringify({structuredQuery: q})}).then(function (r) {
+        if (r.ok) return r.json();
+        return r.text().then(function (body) {
+          var why = '';
+          try { why = JSON.parse(body).error.message || ''; } catch (e) {}
+          var err = new Error("Kindroid wouldn't share the selfie list (" + r.status + (why ? ': ' + why.slice(0, 120) : '') + ')');
+          err.refused = r.status === 400 || r.status === 403;
+          throw err;
+        });
       }).then(function (rows) {
         var got = (rows || []).filter(function (r) { return r && r.document; }).map(function (r) { return r.document; });
         docs = docs.concat(got);
         var last = got.length && got[got.length - 1].fields && got[got.length - 1].fields.timestamp;
-        return got.length < PAGE || docs.length >= MOST || !last ? docs : page(last);
+        return got.length < shape.page || docs.length >= most || !last ? docs : page(last);
       });
     }
     return page(null);
@@ -242,18 +303,107 @@
     list.loading = true;
     readAuth().then(function (auth) {
       if (!auth || !auth.token) throw new Error('Not logged in to Kindroid');
-      if (auth.expires && auth.expires < Date.now() + 30000) throw new Error('Waiting for Kindroid to renew the login');
-      return fetchSelfies(auth, kin, dir).then(function (docs) { return toUrls(docs, auth.uid); });
+      if (auth.expires && auth.expires < Date.now() + 30000) {
+        var wait = new Error('Waiting for Kindroid to renew the login');
+        wait.soon = true;
+        throw wait;
+      }
+      return readAppCheck().then(function (pass) {
+        // Kindroid's database wants the page's App Check pass. Right after the page opens it
+        // may not have a fresh one yet: wait for it (a minute at most, then ask without).
+        if (pass.used && !pass.token && ++state.noPass <= 2) {
+          var later = new Error("Waiting for Kindroid's app check");
+          later.soon = true;
+          throw later;
+        }
+        return fetchSelfies(auth, pass.token, kin, dir);
+      }).then(function (docs) { return toUrls(docs, auth.uid); });
     }).then(function (urls) {
       list.urls = urls;
+      list.problem = '';
+      list.soon = false;
       list.at = Date.now();
       list.loading = false;
-      report({kin: kin, count: urls.length, problem: urls.length ? '' : 'This Kin has no selfies yet'});
+      tell(kin, cfg);
     }, function (e) {
       list.loading = false;
-      list.at = Date.now() - REFRESH_MS + RETRY_MS;
-      report({kin: kin, count: list.urls.length, problem: String((e && e.message) || e)});
+      list.problem = String((e && e.message) || e);
+      list.soon = !!(e && e.soon);
+      // A turned-down question isn't asked again for a while; a login being renewed soon is.
+      list.at = Date.now() - REFRESH_MS + (e && e.soon ? RETRY_MS : FAILED_WAIT_MS);
+      tell(kin, cfg);
     });
+  }
+
+  /** Tells the app's settings pop-up how many selfies there are, or what went wrong. */
+  function tell(kin, cfg) {
+    var list = lists[kin + '|' + direction(cfg)] || {urls: []};
+    var picked = gathered(kin);
+    if (list.urls.length) report({kin: kin, count: list.urls.length, problem: ''});
+    else if (picked.length) report({kin: kin, count: picked.length, problem: '', from: 'gallery'});
+    else if (list.problem && list.soon) report({kin: kin, count: 0, problem: list.problem + '…'});
+    else if (list.problem) report({kin: kin, count: 0, problem: list.problem +
+      ". Open this Kin's selfie gallery and scroll through it once, and the slideshow will use those."});
+    else if (list.at) report({kin: kin, count: 0, problem: 'This Kin has no selfies yet'});
+  }
+
+  // ---- Backup: selfies picked up from Kindroid's own gallery when it's open ----
+
+  function gatheredKey(kin) {
+    return 'kp-selfies:' + kin;
+  }
+
+  function gathered(kin) {
+    try {
+      var v = JSON.parse(localStorage.getItem(gatheredKey(kin)) || '[]');
+      return Array.isArray(v) ? v : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /** The picture's own address (Next.js's resized copies point at it). */
+  function pictureUrl(img) {
+    var u = img.currentSrc || img.src || '';
+    var m = u.match(/\/_next\/image\?(.*)$/);
+    if (m) {
+      try { u = new URLSearchParams(m[1]).get('url') || u; } catch (e) {}
+      if (u.charAt(0) === '/') u = location.origin + u;
+    }
+    u = u.replace(/^https:\/\/storage2\.kindroid\.ai\//, 'https://storage.kindroid.ai/');
+    return /^https:\/\//.test(u) ? u : '';
+  }
+
+  /** While the photo gallery is open, keeps the selfies it shows, newest first, for this Kin. */
+  function gather(kin) {
+    var buttons = document.querySelectorAll('button, [role="button"]'), button = null;
+    for (var i = 0; i < buttons.length && !button; i++) {
+      if (/generate\s+photo\s+selfie/i.test(buttons[i].textContent || '')) button = buttons[i];
+    }
+    if (!button) return;
+    var big = function (img) {
+      var r = img.getBoundingClientRect();
+      return r.width >= 90 && r.height >= 90;
+    };
+    var shown = [];
+    for (var el = button.parentElement; el && el !== document.body; el = el.parentElement) {
+      shown = Array.prototype.filter.call(el.querySelectorAll('img'), big);
+      if (shown.length) break;
+    }
+    var urls = [];
+    shown.forEach(function (img) {
+      var u = pictureUrl(img);
+      if (u && urls.indexOf(u) < 0) urls.push(u);
+    });
+    if (!urls.length) return;
+    var kept = gathered(kin), merged = urls.slice();
+    // The gallery lists newest first; ones kept from before that aren't on screen go after.
+    kept.forEach(function (u) { if (merged.indexOf(u) < 0) merged.push(u); });
+    merged = merged.slice(0, MOST);
+    if (JSON.stringify(merged) === JSON.stringify(kept)) return;
+    try { localStorage.setItem(gatheredKey(kin), JSON.stringify(merged)); } catch (e) {}
+    var cfg = config();
+    tell(kin, cfg);
   }
 
   // ---- Showing them ----
@@ -388,13 +538,22 @@
       restart();
     }
     if (!kin) return;
+    gather(kin);
     var list = lists[kin + '|' + direction(cfg)];
     if (!list || (!list.loading && Date.now() - list.at > REFRESH_MS)) load(kin, cfg);
-    if (!list || !list.urls.length) return;
+    var urls = list && list.urls.length ? list.urls : gathered(kin);
+    if (!list || !list.urls.length) {
+      if (direction(cfg) === 'asc') urls = urls.slice().reverse();
+      if (state.from !== 'gallery') { state.from = 'gallery'; restart(); }
+    } else if (state.from !== 'list') {
+      state.from = 'list';
+      restart();
+    }
+    if (!urls.length) return;
     if (!ensureLayers()) return;
     matchKindroid();
     if (!state.busy && Date.now() >= state.nextAt) {
-      var url = nextUrl(list.urls, cfg);
+      var url = nextUrl(urls, cfg);
       if (url) show(url, cfg, kin);
     }
   }

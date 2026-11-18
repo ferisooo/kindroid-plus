@@ -36,6 +36,13 @@ names come from code; nothing was checked against a live account.
   `firebase:authUser:…` → `value.uid`, `value.stsTokenManager.accessToken`.
   REST API is api.kindroid.ai with that token as Bearer. Don't call
   `v1/view-selfies` (it marks selfies seen).
+- **App Check** (reCAPTCHA Enterprise, auto refresh): Firestore answers 403
+  without it (build 4 on the owner's phone). The page's own token is in
+  IndexedDB `firebase-app-check-database` / `firebase-app-check-store`
+  (keyPath compositeKey, value {token, expireTimeMillis}); it goes along as
+  `X-Firebase-AppCheck`. Never try to mint one.
+- The gallery's query: orderBy timestamp desc, limit 12 (startAfter for more),
+  sometimes a tags filter; database "(default)".
 
 ## Selfie slideshow
 
@@ -45,7 +52,14 @@ reads the selfies with Firestore's REST API (`runQuery`, 100 a page, up to
 1000, read only) using the page's own login, drops the ones Kindroid's gallery
 hides, opens `!enc:` addresses (its own MD5 + the browser's AES-CBC), and
 crossfades them in a layer of its own inside Kindroid's backdrop (copying the
-chosen background's opacity and blur). Random (every one once before repeats),
+chosen background's opacity and blur). It sends the page's App Check pass
+(waits up to a minute for a fresh one), asks 100 at a time with only the
+fields it needs, and if that's turned down (400/403) asks exactly like the
+gallery (12 at a time, whole documents, up to 300). Backup: while the photo
+gallery is open (a "Generate Photo Selfie" button), the big pictures around it
+are kept in localStorage `kp-selfies:<kin>` (newest first, Next.js `/_next/image`
+addresses unwrapped) and used when the list can't be read; a turned-down read
+waits 5 minutes before asking again. Random (every one once before repeats),
 newest or oldest first; 5 s to 5 min. It reads the list again every 10 min.
 `Slides.kt`: settings in prefs "slides" (on, order, seconds, button_at), read
 by the page through a bridge with a made-up name per run; the page reports
