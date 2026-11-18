@@ -43,6 +43,15 @@ names come from code; nothing was checked against a live account.
   `X-Firebase-AppCheck`. Never try to mint one.
 - The gallery's query: orderBy timestamp desc, limit 12 (startAfter for more),
   sometimes a tags filter; database "(default)".
+- Even with the App Check pass, the owner's phone still couldn't read the list
+  (build 5; cause unknown, the pop-up now shows Firestore's words in brackets).
+- Message bubbles (CSS module, e.g. `DSWNqq_bubble`): `…_bubble-self`
+  (background `var(--chat-message-color-self, var(--color-cta))`, #964f43 dark)
+  and `…_bubble-other` (`var(--chat-message-color-other,
+  var(--chat-message-surface-other))`, near black), `…_bubble-bare` for media
+  and voice notes, `…_bubble-wrap` around them. Kindroid has no see-through
+  bubbles: its background presets (Balanced / Focused / Immersive) only set
+  background opacity, blur and a fade of the top of the message list.
 
 ## Selfie slideshow
 
@@ -59,7 +68,21 @@ gallery (12 at a time, whole documents, up to 300). Backup: while the photo
 gallery is open (a "Generate Photo Selfie" button), the big pictures around it
 are kept in localStorage `kp-selfies:<kin>` (newest first, Next.js `/_next/image`
 addresses unwrapped) and used when the list can't be read; a turned-down read
-waits 5 minutes before asking again. Random (every one once before repeats),
+waits 5 minutes before asking again.
+When the list can't be read the page asks the app (`needGallery`) to look
+through the gallery itself: `Slides.gatherFrom` opens
+`/v2/chat/<kin>?gallery=1&media=photo` in a hidden WebView behind the real one
+(drawn, so it loads like it's on screen; never leaves kindroid.ai, no sound,
+no pop-ups) running slides.js in "gather" mode: it scrolls the gallery's
+scroller to the bottom again and again and keeps what it shows (a new one goes
+right after the known one before it), done after 12 s with nothing new, 150 s,
+or (for a Kin looked through before) 24 known ones in a row. At most every 6 h
+per Kin (prefs `gathered_at:<kin>`), stopped when the app leaves.
+Speeds 1 s to 5 min (ticks every 250 ms; the crossfade is under half a slide).
+**See-through message boxes** (pop-up "Message boxes": Solid / See-through 55%
++ 6 px blur (default) / Very see-through 25% + 10 px): a <style id="kp-bubbles">
+that mixes the bubble's own colour with transparent, matched by
+`[class*="_bubble-self"]` / `-other`, not bare or wrap ones. Random (every one once before repeats),
 newest or oldest first; 5 s to 5 min. It reads the list again every 10 min.
 `Slides.kt`: settings in prefs "slides" (on, order, seconds, button_at), read
 by the page through a bridge with a made-up name per run; the page reports

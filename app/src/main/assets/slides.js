@@ -1,8 +1,10 @@
 // Kindroid+ selfie slideshow: the Kin's selfie photos take turns as the chat background.
 //
-// The app runs this on Kindroid's pages wrapped as (function (KP_BRIDGE) { ... })('<name>'),
+// The app runs this on Kindroid's pages wrapped as (function (KP_BRIDGE, KP_MODE) { ... })('<name>', '<mode>'),
 // where KP_BRIDGE names the app's bridge: settings() gives {"on", "order", "seconds"} as JSON,
 // report(json) tells the app what was found (or what went wrong) for its settings pop-up.
+// KP_MODE is "show" (the chat you see: the slideshow) or "gather" (a hidden page the app
+// opens on the Kin's photo gallery: it scrolls through it and keeps the selfies it shows).
 //
 // How Kindroid works (read from its public web code, not guessed):
 // - A Kin's chat is /v2/chat/<kin id> (group chats: /v2/chat/group/<id>, left alone).
@@ -18,11 +20,14 @@
 // - A selfie's url can start with "!enc:": CryptoJS AES with the user's uid as the
 //   passphrase (OpenSSL "Salted__", key from MD5), opened here with the browser's own AES.
 (function () {
-  if (window.__kpSlides) return;
-  window.__kpSlides = true;
+  var MODE = typeof KP_MODE === 'string' ? KP_MODE : 'show';
+  var mark = MODE === 'gather' ? '__kpGather' : '__kpSlides';
+  if (window[mark]) return;
+  window[mark] = true;
 
   var bridge = window[KP_BRIDGE];
-  var TICK_MS = 1000;
+  var TICK_MS = 250;
+  var GATHER_EVERY_MS = 1000;       // looks for an open gallery this often
   var REFRESH_MS = 10 * 60 * 1000;  // read the selfies again (new ones show up)
   var RETRY_MS = 30 * 1000;         // while the login is being renewed
   var FAILED_WAIT_MS = 5 * 60 * 1000; // after Kindroid turned the read down
@@ -33,7 +38,7 @@
     'blocked_for_native_policy', 'native_sfw_policy'];
 
   var lists = {};  // "<kin>|asc" or "<kin>|desc" -> {urls, at, loading}
-  var state = {cfg: '', kin: null, pos: -1, bag: [], shown: null, nextAt: 0, busy: false, failed: 0, noPass: 0};
+  var state = {cfg: '', kin: null, pos: -1, bag: [], shown: null, nextAt: 0, busy: false, failed: 0, noPass: 0, gatheredAt: 0};
   var box = null, layers = [], front = 0;
 
   function config() {
@@ -335,16 +340,17 @@
     });
   }
 
-  /** Tells the app's settings pop-up how many selfies there are, or what went wrong. */
+  /**
+   * Tells the app how many selfies there are and where from, or what went wrong.
+   * needGallery asks the app to look through the gallery by itself (the list couldn't be read).
+   */
   function tell(kin, cfg) {
     var list = lists[kin + '|' + direction(cfg)] || {urls: []};
     var picked = gathered(kin);
-    if (list.urls.length) report({kin: kin, count: list.urls.length, problem: ''});
-    else if (picked.length) report({kin: kin, count: picked.length, problem: '', from: 'gallery'});
-    else if (list.problem && list.soon) report({kin: kin, count: 0, problem: list.problem + '…'});
-    else if (list.problem) report({kin: kin, count: 0, problem: list.problem +
-      ". Open this Kin's selfie gallery and scroll through it once, and the slideshow will use those."});
-    else if (list.at) report({kin: kin, count: 0, problem: 'This Kin has no selfies yet'});
+    if (list.urls.length) report({kin: kin, count: list.urls.length, from: 'list'});
+    else if (list.problem && list.soon) report({kin: kin, count: picked.length, from: 'gallery', waiting: list.problem});
+    else if (list.problem) report({kin: kin, count: picked.length, from: 'gallery', listProblem: list.problem, needGallery: true});
+    else if (list.at) report({kin: kin, count: 0, from: 'list', problem: 'This Kin has no selfies yet'});
   }
 
   // ---- Backup: selfies picked up from Kindroid's own gallery when it's open ----
@@ -374,20 +380,30 @@
     return /^https:\/\//.test(u) ? u : '';
   }
 
-  /** While the photo gallery is open, keeps the selfies it shows, newest first, for this Kin. */
-  function gather(kin) {
-    var buttons = document.querySelectorAll('button, [role="button"]'), button = null;
-    for (var i = 0; i < buttons.length && !button; i++) {
-      if (/generate\s+photo\s+selfie/i.test(buttons[i].textContent || '')) button = buttons[i];
+  /** The open photo gallery's "Generate Photo Selfie" button, or null. */
+  function galleryButton() {
+    var buttons = document.querySelectorAll('button, [role="button"]');
+    for (var i = 0; i < buttons.length; i++) {
+      if (/generate\s+photo\s+selfie/i.test(buttons[i].textContent || '')) return buttons[i];
     }
-    if (!button) return;
-    var big = function (img) {
-      var r = img.getBoundingClientRect();
-      return r.width >= 90 && r.height >= 90;
-    };
+    return null;
+  }
+
+  function bigPicture(img) {
+    var r = img.getBoundingClientRect();
+    return r.width >= 90 && r.height >= 90;
+  }
+
+  /**
+   * While the photo gallery is open, keeps the selfies it shows, newest first, for this Kin.
+   * Gives the ones on show (null when the gallery isn't open).
+   */
+  function gather(kin) {
+    var button = galleryButton();
+    if (!button) return null;
     var shown = [];
     for (var el = button.parentElement; el && el !== document.body; el = el.parentElement) {
-      shown = Array.prototype.filter.call(el.querySelectorAll('img'), big);
+      shown = Array.prototype.filter.call(el.querySelectorAll('img'), bigPicture);
       if (shown.length) break;
     }
     var urls = [];
@@ -395,15 +411,68 @@
       var u = pictureUrl(img);
       if (u && urls.indexOf(u) < 0) urls.push(u);
     });
-    if (!urls.length) return;
-    var kept = gathered(kin), merged = urls.slice();
-    // The gallery lists newest first; ones kept from before that aren't on screen go after.
-    kept.forEach(function (u) { if (merged.indexOf(u) < 0) merged.push(u); });
+    if (!urls.length) return urls;
+    // In the gallery's order (newest first): a new one goes right after the known one
+    // before it, or first if none is, so the order holds even if the gallery only keeps
+    // what's on screen.
+    var kept = gathered(kin), merged = kept.slice(), at = -1;
+    urls.forEach(function (u) {
+      var i = merged.indexOf(u);
+      if (i >= 0) { at = i; return; }
+      merged.splice(at + 1, 0, u);
+      at++;
+    });
     merged = merged.slice(0, MOST);
-    if (JSON.stringify(merged) === JSON.stringify(kept)) return;
+    if (merged.length === kept.length && merged.every(function (u, i) { return u === kept[i]; })) return urls;
     try { localStorage.setItem(gatheredKey(kin), JSON.stringify(merged)); } catch (e) {}
-    var cfg = config();
-    tell(kin, cfg);
+    if (MODE === 'show') tell(kin, config());
+    return urls;
+  }
+
+  /** The part of the gallery that scrolls (the page itself if nothing else does). */
+  function galleryScroller(button) {
+    for (var el = button.parentElement; el && el !== document.body; el = el.parentElement) {
+      var boxes = [el].concat(Array.prototype.slice.call(el.querySelectorAll('div')));
+      for (var i = 0; i < boxes.length; i++) {
+        var b = boxes[i], y = getComputedStyle(b).overflowY;
+        if ((y === 'auto' || y === 'scroll') && b.scrollHeight > b.clientHeight + 20 &&
+            Array.prototype.some.call(b.querySelectorAll('img'), bigPicture)) return b;
+      }
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  /**
+   * The hidden page the app opens on the Kin's photo gallery: scrolls to the bottom again and
+   * again so the gallery loads more, keeping every selfie it shows, then says it's done. A
+   * Kin looked through before only needs the new ones: it stops after a run of known ones.
+   */
+  function gatherAll() {
+    var kin = kinId(), began = Date.now(), before = {}, seen = {}, count = 0, knownRun = 0, quiet = 0, last = -1;
+    gathered(kin).forEach(function (u) { before[u] = 1; });
+    var quick = Object.keys(before).length > 0;
+    var timer = setInterval(function () {
+      kin = kinId() || kin;
+      var urls = gather(kin) || [];
+      urls.forEach(function (u) {
+        if (seen[u]) return;
+        seen[u] = 1;
+        count++;
+        knownRun = before[u] ? knownRun + 1 : 0;
+      });
+      var button = urls.length ? galleryButton() : null;
+      if (button) {
+        var box = galleryScroller(button);
+        box.scrollTop = box.scrollHeight;
+      }
+      quiet = count === last ? quiet + 1 : 0;
+      last = count;
+      var took = Date.now() - began;
+      var done = took > 150000 || count >= MOST || (quick && knownRun >= 24) ||
+        (count > 0 && quiet >= 15) || (count === 0 && took > 45000);
+      report({mode: 'gather', kin: kin, count: count, done: done});
+      if (done) clearInterval(timer);
+    }, 800);
   }
 
   // ---- Showing them ----
@@ -496,16 +565,17 @@
       state.busy = false;
       state.failed = 0;
       if (state.kin !== kin || !ensureLayers()) return;
-      var incoming = layers[1 - front], old = layers[front];
+      var incoming = layers[1 - front], old = layers[front], fade = fadeMs(cfg);
+      incoming.style.transition = old.style.transition = 'opacity ' + fade + 'ms ease';
       incoming.style.zIndex = '2';
       old.style.zIndex = '1';
       incoming.style.backgroundImage = css(url);
       incoming.style.opacity = '1';
       front = 1 - front;
       // The old one goes once the new one covers it, so Kindroid's own never peeks through.
-      setTimeout(function () { if (layers[front] !== old) old.style.opacity = '0'; }, FADE_MS);
+      setTimeout(function () { if (layers[front] !== old) old.style.opacity = '0'; }, fade);
       state.shown = url;
-      state.nextAt = Date.now() + Math.max(2, Number(cfg.seconds) || 10) * 1000;
+      state.nextAt = Date.now() + slideMs(cfg);
     };
     img.onerror = function () {
       state.busy = false;
@@ -514,6 +584,47 @@
       if (state.failed === 20) report({kin: kin, count: 0, problem: "The selfie pictures didn't load"});
     };
     img.src = url;
+  }
+
+  // ---- See-through message boxes ----
+  // Kindroid's bubbles are always solid (its "Immersive" preset only brightens the background
+  // and fades the top of the chat). Classes are CSS-module hashes: matched by their local names
+  // (…_bubble-self / …_bubble-other), leaving out bare ones (pictures, videos, voice notes).
+  var BUBBLES = {glass: {keep: 55, blur: 6}, clear: {keep: 25, blur: 10}};
+
+  function bubbleCss(b) {
+    var rule = function (side, color) {
+      return '[class*="_bubble-' + side + '"]:not([class*="_bubble-bare"]):not([class*="_bubble-wrap"]){' +
+        'background:color-mix(in srgb, ' + color + ' ' + b.keep + '%, transparent) !important;' +
+        '-webkit-backdrop-filter:blur(' + b.blur + 'px);backdrop-filter:blur(' + b.blur + 'px);' +
+        'text-shadow:0 1px 2px rgba(0,0,0,0.35);}';
+    };
+    return rule('other', 'var(--chat-message-color-other, var(--chat-message-surface-other, #1b1a1c))') +
+      rule('self', 'var(--chat-message-color-self, var(--color-cta, #964f43))');
+  }
+
+  function styleBubbles(kind) {
+    var el = document.getElementById('kp-bubbles'), b = BUBBLES[kind];
+    if (!b) {
+      if (el) el.parentNode.removeChild(el);
+      return;
+    }
+    var css = bubbleCss(b);
+    if (!el) {
+      el = document.createElement('style');
+      el.id = 'kp-bubbles';
+      (document.head || document.documentElement).appendChild(el);
+    }
+    if (el.textContent !== css) el.textContent = css;
+  }
+
+  function slideMs(cfg) {
+    return Math.max(1, Number(cfg.seconds) || 10) * 1000;
+  }
+
+  /** The crossfade: at most 1.2 s, and under half a slide, so fast slideshows still show each one. */
+  function fadeMs(cfg) {
+    return Math.min(FADE_MS, Math.round(slideMs(cfg) * 0.4));
   }
 
   function restart() {
@@ -526,6 +637,7 @@
   function tick() {
     if (document.visibilityState === 'hidden') return;
     var cfg = config(), key = JSON.stringify(cfg);
+    styleBubbles(cfg.bubbles);
     if (key !== state.cfg) {
       state.cfg = key;
       restart();
@@ -538,7 +650,10 @@
       restart();
     }
     if (!kin) return;
-    gather(kin);
+    if (Date.now() - state.gatheredAt >= GATHER_EVERY_MS) {
+      state.gatheredAt = Date.now();
+      gather(kin);
+    }
     var list = lists[kin + '|' + direction(cfg)];
     if (!list || (!list.loading && Date.now() - list.at > REFRESH_MS)) load(kin, cfg);
     var urls = list && list.urls.length ? list.urls : gathered(kin);
@@ -558,8 +673,11 @@
     }
   }
 
-  window.__kpSlidesTick = tick;
   window.__kpSlidesTest = {md5: md5, openEnc: openEnc, shows: shows};
+  if (MODE === 'gather') {
+    gatherAll();
+    return;
+  }
   setInterval(tick, TICK_MS);
   tick();
 })();

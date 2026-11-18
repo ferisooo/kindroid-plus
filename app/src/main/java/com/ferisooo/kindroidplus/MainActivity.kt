@@ -136,6 +136,8 @@ class MainActivity : Activity() {
             return
         }
         val url = gone.url?.takeIf { isKindroid(Uri.parse(it).host) } ?: lastPage() ?: HOME
+        // The hidden gallery page sits behind the real one; it goes too, so the new page is in front.
+        slides.stopGathering(finished = null)
         root.removeView(gone)
         gone.destroy()
         web = newPage()
@@ -347,11 +349,14 @@ class MainActivity : Activity() {
         // Saves the login cookies to storage now, so they're there if the phone closes the app.
         CookieManager.getInstance().flush()
         rememberPage()
+        // Looking through the gallery stops when you leave; it goes again another time.
+        slides.stopGathering(finished = null)
         web.onPause()
         super.onPause()
     }
 
     override fun onDestroy() {
+        slides.stopGathering(finished = null)
         closePopup()
         root.removeView(web)
         web.destroy()
