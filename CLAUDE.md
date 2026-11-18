@@ -89,7 +89,9 @@ reads the selfies with Firestore's REST API (`runQuery`, 100 a page, up to
 1000, read only) using the page's own login, drops the ones Kindroid's gallery
 hides, opens `!enc:` addresses (its own MD5 + the browser's AES-CBC), and
 crossfades them in a layer of its own inside Kindroid's backdrop (copying the
-chosen background's opacity and blur). It sends the page's App Check pass
+chosen background's opacity and blur onto an inner `dim` layer over solid
+black: the owner saw Kindroid's own background "ghost" through when the whole
+box copied the opacity, build 14). It sends the page's App Check pass
 (waits up to a minute for a fresh one), asks 100 at a time with only the
 fields it needs, and if that's turned down (400/403) asks exactly like the
 gallery (12 at a time, whole documents, up to 300). Backup: while the photo

@@ -39,7 +39,10 @@
 
   var lists = {};  // kin id -> {photos, videos, at, loading, problem, soon, videoProblem}
   var state = {cfg: '', kin: null, pos: -1, bag: [], shown: null, nextAt: 0, busy: false, failed: 0, noPass: 0, gatheredAt: 0, sheet: null, covered: null};  // sheet: null until first told, so a new page always says
-  var box = null, layers = [], front = 0;
+  // box: our layer in Kindroid's backdrop; dim: inside it, as see-through and blurred as the
+  // background chosen in Kindroid; layers: the two pictures it crossfades between.
+  var box = null, dim = null, layers = [], front = 0;
+  var BLACK = 'var(--v2-fixed-black, #000)';
 
   function config() {
     try { return JSON.parse(bridge.settings()); } catch (e) { return {on: false}; }
@@ -629,6 +632,7 @@
   function drop() {
     if (box && box.parentNode) box.parentNode.removeChild(box);
     box = null;
+    dim = null;
     layers = [];
   }
 
@@ -641,17 +645,21 @@
     box.setAttribute('data-kp-slides', '1');
     box.setAttribute('aria-hidden', 'true');
     box.style.cssText = 'position:absolute;inset:0;z-index:1;pointer-events:none;';
+    dim = document.createElement('div');
+    dim.style.cssText = 'position:absolute;inset:0;';
+    box.appendChild(dim);
     for (var i = 0; i < 2; i++) {
       var d = document.createElement('div');
       d.style.cssText = 'position:absolute;inset:0;background-size:cover;background-position:50% 30%;' +
         'background-repeat:no-repeat;opacity:0;transition:opacity ' + FADE_MS + 'ms ease;';
-      box.appendChild(d);
+      dim.appendChild(d);
       layers.push(d);
     }
     front = 0;
     host.appendChild(box);
     // Kindroid drew its page again and took ours away: put the last picture straight back.
     if (state.shown) {
+      box.style.backgroundColor = BLACK;
       layers[0].style.transition = 'none';
       paint(layers[0], state.shown, state.shown.kind === 'video' ? makeVideo(state.shown.url) : null);
       layers[0].style.opacity = '1';
@@ -668,15 +676,10 @@
    */
   function darkenForMenu(peek) {
     if (!box) return;
-    if (peek) {
-      box.style.opacity = '1';
-      box.style.filter = '';
-      box.style.backgroundColor = 'var(--v2-fixed-black, #0f0e0f)';
-    } else {
-      box.style.backgroundColor = '';
-    }
+    if (peek) box.style.backgroundColor = BLACK;
+    else if (!state.shown) box.style.backgroundColor = '';
+    dim.style.visibility = peek ? 'hidden' : '';
     layers.forEach(function (l) {
-      l.style.visibility = peek ? 'hidden' : '';
       Array.prototype.forEach.call(l.querySelectorAll('video'), function (v) {
         if (peek) v.pause();
         else if (v.paused) { var p = v.play(); if (p && p.catch) p.catch(function () {}); }
@@ -684,13 +687,20 @@
     });
   }
 
-  /** As see-through and as blurred as the background chosen in Kindroid. */
+  /**
+   * As see-through and as blurred as the background chosen in Kindroid, over plain black (like
+   * Kindroid's own picture over its black backdrop). The box itself is solid once a picture
+   * shows, so Kindroid's own picture never peeks through ours (the owner saw a faint "other
+   * selfie" when the whole box was see-through).
+   */
   function matchKindroid() {
     var theirs = null, kids = box.parentNode.children;
     for (var i = 0; i < kids.length; i++) if (kids[i] !== box && kids[i].style && kids[i].style.backgroundImage) theirs = kids[i];
     var cs = theirs ? getComputedStyle(theirs) : null;
-    box.style.opacity = cs ? cs.opacity : '1';
-    box.style.filter = cs && cs.filter && cs.filter !== 'none' ? cs.filter : '';
+    box.style.opacity = '1';
+    box.style.filter = '';
+    dim.style.opacity = cs ? cs.opacity : '1';
+    dim.style.filter = cs && cs.filter && cs.filter !== 'none' ? cs.filter : '';
   }
 
   function shuffle(a) {
@@ -776,6 +786,7 @@
       old.style.zIndex = '1';
       paint(incoming, item, video);
       incoming.style.opacity = '1';
+      box.style.backgroundColor = BLACK;
       front = 1 - front;
       // The old one goes once the new one covers it, so Kindroid's own never peeks through.
       setTimeout(function () {
