@@ -171,6 +171,20 @@ scene → one scene ≤ 150 chars; field → the whole box text (improved if it 
 some, paragraphs kept, ≤ 90% of the limit); reply → three replies to tap. "Use
 it" fills the box (`__kpPut(text, kind)`); Kindroid's Save / Send still decide.
 Also from the 🖼 pop-up ("Write a scene ✨", "AI: …").
+"Again" adds what it already wrote in that pop-up (`Ideas.avoid`, the last 4,
+or 9 replies) and asks for something clearly different: on DeepSeek the four
+tries came out nearly the same (build 8). DeepSeek also gets temperature 1.3
+(only DeepSeek: OpenAI's newer models, Gemini 3.6+ and Claude refuse sampling
+settings). The Kin's name is the innermost visible `…_name` in the header
+(an outer one read "avaava").
+
+## Shorter voice bars
+
+Kindroid's voice player (module eArjsW_: `…_card` in a `…_voice-drawer` with
+···, ▷, the waveform `[role=slider][aria-label="Seek voice audio"]`, 0:00)
+fills the bubble; bars are counted from the waveform's width (ResizeObserver,
+width/6). `<style id="kp-voice">` fixes the waveform at 140 px (the card stops
+growing); seeking uses the slider's own size. Always on.
 `Ai.kt`: plain HttpURLConnection, never through the page. Claude: Messages API,
 `claude-opus-5-5`, effort low, `fallbacks: "default"` with beta
 `server-side-fallback-2026-07-01`, anthropic-version 2026-10-21, refusal →

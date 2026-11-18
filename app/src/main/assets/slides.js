@@ -907,6 +907,24 @@
       rule('self', 'var(--chat-message-color-self, var(--color-cta, #964f43))');
   }
 
+  // ---- Shorter voice bars ----
+  // Kindroid's voice player (CSS module …_card in a …_voice-drawer: ···, ▷, the waveform
+  // (role=slider "Seek voice audio", bars counted from its width by a ResizeObserver), 0:00)
+  // stretches across the bubble. A fixed 140 px waveform gives fewer bars; seeking uses the
+  // slider's own size, so it still works (checked live by the owner's PC session).
+  var VOICE_CSS =
+    '[class*="_voice-drawer"] [class*="_card"],[class*="_card"]:has(> [aria-label="Seek voice audio"]){flex:0 1 auto !important;}' +
+    '[class*="_voice-drawer"] [class*="_waveform"],[role="slider"][aria-label="Seek voice audio"]' +
+    '{flex:0 0 140px !important;width:140px !important;max-width:140px !important;min-width:0 !important;}';
+
+  function shortVoiceBars() {
+    if (document.getElementById('kp-voice')) return;
+    var el = document.createElement('style');
+    el.id = 'kp-voice';
+    el.textContent = VOICE_CSS;
+    (document.head || document.documentElement).appendChild(el);
+  }
+
   function styleBubbles(kind) {
     var el = document.getElementById('kp-bubbles'), b = BUBBLES[kind];
     if (!b) {
@@ -974,10 +992,20 @@
     return visibleBoxes('scene');
   }
 
+  /**
+   * The Kin's name from the chat's header: the innermost "…_name" element near the top (an
+   * outer one holds the name twice, which read "avaava"), and a name that's the same word twice
+   * is halved.
+   */
   function kinName() {
     var names = document.querySelectorAll('[class*="_name"]');
     for (var i = 0; i < names.length; i++) {
-      var r = names[i].getBoundingClientRect(), t = (names[i].textContent || '').trim();
+      var inner = names[i].querySelectorAll('[class*="_name"]'), hasInner = false;
+      for (var j = 0; j < inner.length; j++) if (inner[j].offsetWidth > 0 && (inner[j].textContent || '').trim()) hasInner = true;
+      if (hasInner) continue;
+      var r = names[i].getBoundingClientRect();
+      var t = (names[i].innerText || names[i].textContent || '').replace(/\s+/g, ' ').trim();
+      if (t.length % 2 === 0 && t.slice(0, t.length / 2) === t.slice(t.length / 2)) t = t.slice(0, t.length / 2);
       if (r.top < innerHeight * 0.25 && r.width > 0 && t && t.length <= 40) return t;
     }
     return '';
@@ -1155,6 +1183,7 @@
     if (document.visibilityState === 'hidden') return;
     var cfg = config(), key = JSON.stringify(cfg);
     styleBubbles(cfg.bubbles);
+    shortVoiceBars();
     showIdeasButtons();
     tellSheet();
     if (key !== state.cfg) {

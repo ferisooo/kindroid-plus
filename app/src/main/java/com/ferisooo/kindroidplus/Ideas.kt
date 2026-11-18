@@ -228,16 +228,20 @@ class Ideas(private val activity: Activity, private val putInBox: (String, Strin
                 dialog.dismiss()
             }
         }
+        // What it wrote so far in this pop-up: "Again" asks for something different from these
+        // (asked the same way, AIs tend to write nearly the same thing every time).
+        val earlier = mutableListOf<String>()
         write.setOnClickListener {
             write.isEnabled = false
             spinner.visibility = View.VISIBLE
             status.text = "Writing…"
-            val (system, asked) = when (kind) {
+            val (system, question) = when (kind) {
                 "reply" -> REPLY_SYSTEM to replyPrompt(want.text.toString().trim(), name, current, recent)
                 "field" -> fieldSystem(label, field?.optString("guide").orEmpty(), field?.optString("example").orEmpty(), limit) to
                     fieldPrompt(want.text.toString().trim(), name, label, current, context.optJSONObject("others"), recent)
                 else -> SYSTEM to prompt(want.text.toString().trim(), name, current, recent)
             }
+            val asked = question + avoid(kind, earlier)
             Thread {
                 val typed = typedModel(p)
                 val outcome = runCatching {
@@ -254,6 +258,7 @@ class Ideas(private val activity: Activity, private val putInBox: (String, Strin
                         status.text = ""
                         if (kind == "reply") {
                             val options = replies(reply.text)
+                            earlier += options
                             choices.removeAllViews()
                             if (options.isEmpty()) status.text = "⚠️ The AI didn't write anything. Try again."
                             options.forEach { option ->
@@ -266,6 +271,7 @@ class Ideas(private val activity: Activity, private val putInBox: (String, Strin
                             if (options.isNotEmpty()) choices.addView(small("Tap one to put it in the message box."))
                         } else {
                             val text = tidy(reply.text, limit, keepLines = kind == "field")
+                            if (text.isNotEmpty()) earlier += text
                             if (text.isEmpty()) {
                                 status.text = "⚠️ The AI didn't write anything. Try again."
                             } else {
@@ -385,6 +391,24 @@ class Ideas(private val activity: Activity, private val putInBox: (String, Strin
             for (i in 0 until recent.length()) {
                 val m = recent.optJSONObject(i) ?: continue
                 append(if (m.optBoolean("mine")) "Me: " else "Companion: ").append(m.optString("text").replace(Regex("\\s+"), " ").take(300)).append('\n')
+            }
+        }
+
+        /**
+         * For "Again": what it already wrote, and a clear ask for something different, so each
+         * try brings a new idea (the last few only, so the question stays short).
+         */
+        fun avoid(kind: String, earlier: List<String>): String {
+            if (earlier.isEmpty()) return ""
+            val shown = earlier.takeLast(if (kind == "reply") 9 else 4)
+            return buildString {
+                append("\n\n")
+                append(when (kind) {
+                    "reply" -> "Replies you already suggested (suggest new ones that are clearly different in idea and tone):"
+                    "field" -> "Versions you already wrote (write a noticeably different one: other wording, other details):"
+                    else -> "Scenes you already suggested (write a clearly different one: another place, time, outfit, mood or activity):"
+                })
+                shown.forEach { append("\n- ").append(it.replace(Regex("\\s+"), " ").take(400)) }
             }
         }
 

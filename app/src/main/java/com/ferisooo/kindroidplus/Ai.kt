@@ -133,6 +133,10 @@ class Ai(private val bases: Map<Provider, String> = BASES) {
                     .put("messages", JSONArray()
                         .put(JSONObject().put("role", "system").put("content", system))
                         .put(JSONObject().put("role", "user").put("content", prompt)))
+                // DeepSeek's own advice for creative writing is a high temperature (1.5); left at its
+                // default it wrote nearly the same scene every time. (OpenAI's newer models and Grok's
+                // reasoning ones refuse other temperatures, so only DeepSeek gets one.)
+                if (provider == Provider.DEEPSEEK) body.put("temperature", 1.3)
                 val path = if (provider == Provider.DEEPSEEK) "/chat/completions" else "/v1/chat/completions"
                 val json = call("POST", base + path, bearer(key), body.toString())
                 val choice = json.optJSONArray("choices")?.optJSONObject(0)
