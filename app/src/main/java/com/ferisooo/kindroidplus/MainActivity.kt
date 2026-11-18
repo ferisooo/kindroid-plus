@@ -14,6 +14,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -37,6 +38,9 @@ class MainActivity : Activity() {
     private lateinit var loading: ProgressBar
     private lateinit var offline: TextView
 
+    /** Covers the empty page while Kindroid starts up, so it doesn't look stuck. */
+    private lateinit var starting: View
+
     /** A sign-in window a page opened ("Sign in with Apple" and the like), shown over Kindroid. */
     private var popup: WebView? = null
 
@@ -47,11 +51,8 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         root = FrameLayout(this).apply { setBackgroundColor(BACKGROUND) }
 
-        web = WebView(this)
-        setUp(web)
-        web.webViewClient = MainClient()
-        web.webChromeClient = MainChrome()
-        root.addView(web, FrameLayout.LayoutParams(MATCH, MATCH))
+        web = newPage()
+        root.addView(web, 0, FrameLayout.LayoutParams(MATCH, MATCH))
 
         // A thin line at the top while a page loads.
         loading = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -78,9 +79,62 @@ class MainActivity : Activity() {
         }
         root.addView(offline, FrameLayout.LayoutParams(MATCH, MATCH))
 
+        // A pink spinner in the middle while Kindroid starts up.
+        starting = FrameLayout(this).apply {
+            setBackgroundColor(BACKGROUND)
+            addView(ProgressBar(this@MainActivity).apply {
+                indeterminateTintList = ColorStateList.valueOf(ACCENT)
+            }, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER))
+        }
+        root.addView(starting, FrameLayout.LayoutParams(MATCH, MATCH))
+        // Never longer than this, even if the page is slow to say it's done.
+        root.postDelayed({ hideStarting() }, START_COVER_MS)
+
         setContentView(root)
         keepClearOfSystemBars()
-        web.loadUrl(HOME)
+        // Back where you were last time (the chat you had open), not the start page.
+        web.loadUrl(lastPage() ?: HOME)
+    }
+
+    private fun newPage(): WebView = WebView(this).also {
+        setUp(it)
+        // Keeps the page drawn while the app is away, so coming back shows it at once.
+        it.settings.offscreenPreRaster = true
+        it.webViewClient = MainClient()
+        it.webChromeClient = MainChrome()
+    }
+
+    private fun hideStarting() {
+        if (starting.visibility != View.VISIBLE) return
+        starting.animate().alpha(0f).setDuration(200).withEndAction { starting.visibility = View.GONE }.start()
+    }
+
+    private fun prefs() = getSharedPreferences("app", MODE_PRIVATE)
+
+    /** The Kindroid page open when you last left the app. */
+    private fun lastPage(): String? =
+        prefs().getString(LAST_PAGE, null)?.takeIf { isKindroid(Uri.parse(it).host) }
+
+    private fun rememberPage() {
+        val url = web.url ?: return
+        if (isKindroid(Uri.parse(url).host)) prefs().edit().putString(LAST_PAGE, url).apply()
+    }
+
+    /**
+     * Android stopped the page's engine (it does when the phone runs low on memory).
+     * Without this the whole app would close; instead Kindroid opens again where it was.
+     */
+    private fun restartPage(gone: WebView) {
+        if (gone != web) {
+            if (gone == popup) closeSoon()
+            return
+        }
+        val url = gone.url?.takeIf { isKindroid(Uri.parse(it).host) } ?: lastPage() ?: HOME
+        root.removeView(gone)
+        gone.destroy()
+        web = newPage()
+        root.addView(web, 0, FrameLayout.LayoutParams(MATCH, MATCH))
+        web.loadUrl(url)
     }
 
     /** Settings both Kindroid and its sign-in windows use. */
@@ -133,7 +187,15 @@ class MainActivity : Activity() {
         // As soon as the page shows, and again when it's done loading (the script only starts once a page).
         override fun onPageCommitVisible(view: WebView, url: String) = tidy(view, url)
 
-        override fun onPageFinished(view: WebView, url: String) = tidy(view, url)
+        override fun onPageFinished(view: WebView, url: String) {
+            tidy(view, url)
+            hideStarting()
+        }
+
+        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+            restartPage(view)
+            return true
+        }
 
         private fun tidy(view: WebView, url: String) {
             if (isKindroid(Uri.parse(url).host)) view.evaluateJavascript(TIDY_JS, null)
@@ -240,7 +302,8 @@ class MainActivity : Activity() {
             window != null && window.canGoBack() -> window.goBack()
             window != null -> closePopup()
             web.canGoBack() -> web.goBack()
-            else -> super.onBackPressed()
+            // Hides the app instead of closing it, so it opens again at once, still on the same page.
+            else -> moveTaskToBack(true)
         }
     }
 
@@ -270,6 +333,7 @@ class MainActivity : Activity() {
     override fun onPause() {
         // Saves the login cookies to storage now, so they're there if the phone closes the app.
         CookieManager.getInstance().flush()
+        rememberPage()
         web.onPause()
         super.onPause()
     }
@@ -351,6 +415,8 @@ class MainActivity : Activity() {
         """.trimIndent()
 
         private const val PICK_FILES = 1
+        private const val LAST_PAGE = "last_page"
+        private const val START_COVER_MS = 8_000L
         private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         private val BACKGROUND = Color.rgb(0x12, 0x10, 0x16)
         private val ACCENT = Color.rgb(0xFF, 0x6F, 0xA5)
