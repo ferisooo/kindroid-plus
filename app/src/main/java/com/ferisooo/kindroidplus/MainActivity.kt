@@ -129,6 +129,15 @@ class MainActivity : Activity() {
         override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
             if (request.isForMainFrame) offline.visibility = View.VISIBLE
         }
+
+        // As soon as the page shows, and again when it's done loading (the script only starts once a page).
+        override fun onPageCommitVisible(view: WebView, url: String) = tidy(view, url)
+
+        override fun onPageFinished(view: WebView, url: String) = tidy(view, url)
+
+        private fun tidy(view: WebView, url: String) {
+            if (isKindroid(Uri.parse(url).host)) view.evaluateJavascript(TIDY_JS, null)
+        }
     }
 
     private inner class MainChrome : WebChromeClient() {
@@ -285,10 +294,61 @@ class MainActivity : Activity() {
             "apple.com", "stripe.com", "stripe.network",
         )
 
-        fun staysInApp(host: String?): Boolean {
+        fun staysInApp(host: String?): Boolean = onSite(host, IN_APP_SITES)
+
+        fun isKindroid(host: String?): Boolean = onSite(host, listOf("kindroid.ai", "kindroid.com"))
+
+        private fun onSite(host: String?, sites: List<String>): Boolean {
             val h = host?.lowercase()?.trimEnd('.') ?: return false
-            return IN_APP_SITES.any { h == it || h.endsWith(".$it") }
+            return sites.any { h == it || h.endsWith(".$it") }
         }
+
+        /**
+         * Hides Kindroid's "Open in your browser" box (it only says Google and Apple
+         * sign-in may not work here; the email login does). It finds the box by its
+         * heading, then hides the biggest piece around it that's still only the box
+         * (never the email login under it). Kindroid changes screens without loading
+         * a new page, so it keeps watching for the box to come back.
+         */
+        private val TIDY_JS = """
+            (function () {
+              if (window.__kindroidPlusTidy) return;
+              window.__kindroidPlusTidy = true;
+              var HEADING = 'open in your browser';
+              function hideBox() {
+                var root = document.body;
+                if (!root) return;
+                var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+                var node;
+                while ((node = walker.nextNode())) {
+                  if (node.nodeValue.trim().toLowerCase() !== HEADING) continue;
+                  var box = null;
+                  for (var el = node.parentElement; el && el !== root; el = el.parentElement) {
+                    var text = (el.textContent || '').toLowerCase();
+                    if (text.length > 400 || el.querySelector('input, textarea, select') ||
+                        text.indexOf('welcome') >= 0 || text.indexOf('login') >= 0 || text.indexOf('terms of') >= 0) break;
+                    box = el;
+                  }
+                  if (box) box.style.setProperty('display', 'none', 'important');
+                }
+              }
+              hideBox();
+              var waiting = false;
+              new MutationObserver(function (changes) {
+                if (waiting) return;
+                for (var i = 0; i < changes.length; i++) {
+                  var added = changes[i].addedNodes;
+                  for (var j = 0; j < added.length; j++) {
+                    if ((added[j].textContent || '').toLowerCase().indexOf(HEADING) >= 0) {
+                      waiting = true;
+                      setTimeout(function () { waiting = false; hideBox(); }, 0);
+                      return;
+                    }
+                  }
+                }
+              }).observe(document.documentElement, { childList: true, subtree: true });
+            })();
+        """.trimIndent()
 
         private const val PICK_FILES = 1
         private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
