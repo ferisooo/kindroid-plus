@@ -8,8 +8,11 @@ chat background (the selfie slideshow).
   code. Same setup as the owner's `ferisooo/Android-File-Hider`.
 - minSdk 26, compile/target SDK 36, AGP 8.11.1, Kotlin 2.2.20, Gradle 8.14.3.
 - Package `com.ferisooo.kindroidplus`. `MainActivity.kt` (the WebView, sign-in
-  pop-ups, uploads, offline note, fast reopen), `Slides.kt` (slideshow settings,
-  bridge, 🖼 button) and `assets/slides.js` (the slideshow on the page).
+  pop-ups, uploads, offline note, fast reopen, singleTask), `Slides.kt` (the 🖼
+  button and "Kindroid+ 💕" pop-up: three drop-downs Order / Speed / Boxes,
+  status, scene ideas; the page bridge; the hidden gallery pass), `Ai.kt` and
+  `SceneIdeas.kt` (✨ scene ideas with the owner's own AI key), and
+  `assets/slides.js` (everything on the page).
 - Kindroid's real site is **kindroid.ai** (the owner said kindroid.com; both
   are kept in the app). Login is by email code; "Sign in with Google" is
   blocked by Google inside apps.
@@ -43,8 +46,19 @@ names come from code; nothing was checked against a live account.
   `X-Firebase-AppCheck`. Never try to mint one.
 - The gallery's query: orderBy timestamp desc, limit 12 (startAfter for more),
   sometimes a tags filter; database "(default)".
-- Even with the App Check pass, the owner's phone still couldn't read the list
-  (build 5; cause unknown, the pop-up now shows Firestore's words in brackets).
+- The Firestore read works with the App Check pass (the PC session checked it
+  logged in, build 7). Selfie `url`s open ("!enc:") to bare storage **paths**
+  ("users/<uid>/…/<id>.jpg"): Kindroid's resolver puts them on
+  `https://storage.kindroid.ai/` (http(s) stays, storage2 → storage). Builds
+  4-7 dropped them (found 0); `fullUrl` fixes it, and `lighter` asks Kindroid's
+  resizer (`/cdn-cgi/image/width=1080,fit=scale-down,format=auto/<path>`).
+- Scene setting: the location-pin button (aria-label "Scene setting") opens the
+  "Set the scene" sheet; a React-controlled `<textarea maxlength=160
+  placeholder="location, attire, activity, time, etc.">` (or the "Suggested
+  scene" `…_suggestion-input`), saved only by Kindroid's Save button (POST
+  api.kindroid.ai/v1/update-info {ai_id, current_scene}). Filled with the
+  native value setter + an "input" event.
+- Sheets are `[role=dialog]` / `[aria-modal]` and add no history entry.
 - Message bubbles (CSS module, e.g. `DSWNqq_bubble`): `…_bubble-self`
   (background `var(--chat-message-color-self, var(--color-cta))`, #964f43 dark)
   and `…_bubble-other` (`var(--chat-message-color-other,
@@ -79,9 +93,13 @@ right after the known one before it), done after 12 s with nothing new, 150 s,
 or (for a Kin looked through before) 24 known ones in a row. At most every 6 h
 per Kin (prefs `gathered_at:<kin>`), stopped when the app leaves.
 Speeds 1 s to 5 min (ticks every 250 ms; the crossfade is under half a slide).
-**See-through message boxes** (pop-up "Message boxes": Solid / See-through 55%
-(default) / Very see-through 25%; no blur, the owner found the blur made it
-look blurry; a text shadow keeps the words readable): a <style id="kp-bubbles">
+While a sheet is open the page tells the app (`bridge.sheet`): the 🖼 button
+hides and back runs `__kpCloseSheet` (Escape, then a close button, then
+history.back) instead of leaving the chat. WebView debugging is turned off.
+**See-through message boxes** (drop-down "Boxes": Solid / See-through 55%
+(default) / Very see-through 25% / Invisible (no colour, edge or shadow, the
+words get a dark glow); no blur, the owner found the blur made it look blurry):
+a <style id="kp-bubbles">
 that mixes the bubble's own colour with transparent, matched by
 `[class*="_bubble-self"]` / `-other`, not bare or wrap ones. Random (every one once before repeats),
 newest or oldest first; 5 s to 5 min. It reads the list again every 10 min.
@@ -91,6 +109,28 @@ what it found, shown at the bottom of the settings pop-up. The 🖼 button shows
 only in a Kin's chat, sits at the right edge and can be dragged up or down.
 Tested in headless Chromium on a pretend chat page (fake Firestore, CryptoJS
 values, md5 against Node), not against the real site.
+
+## ✨ Scene ideas (owner's own AI key)
+
+The owner picks Claude, ChatGPT, Gemini, Grok or DeepSeek and pastes a key
+(prefs "ai", app-only storage, allowBackup off; checked by listing models,
+which costs nothing). A "✨ Ideas" button floats over the scene box's corner
+(added to `document.body`, not inside React's elements; pointer-events auto and
+stopPropagation so a modal sheet doesn't close or swallow the tap); it sends
+the Kin's name (header `…_name`), the box text and the last 6 messages to
+`SceneIdeas`, which asks the AI for one scene of at most 150 characters
+(`SYSTEM`, Kindroid's own description of the box), `tidy`s it to ≤ 160, and
+"Use it" fills the box (`__kpSetScene`); the owner still taps Kindroid's Save.
+Also reachable from the 🖼 pop-up ("Write a scene ✨", "AI: …").
+`Ai.kt`: plain HttpURLConnection, never through the page. Claude: Messages API,
+`claude-opus-5-5`, effort low, `fallbacks: "default"` with beta
+`server-side-fallback-2026-07-01`, anthropic-version 2026-10-21, refusal →
+plain words. ChatGPT / Grok / DeepSeek: chat completions (no temperature or
+token limits). Gemini: generateContent with `x-goog-api-key`, thoughts left
+out. For the non-Claude ones the model is picked from the key's own model list
+(`pickModel`: newest general one), remembered, and picked again if it goes
+away; a typed model is never swapped. Tested on the JVM against pretend
+servers (request shapes, picking, errors), not against the real companies.
 
 ## Building
 

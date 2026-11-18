@@ -38,7 +38,7 @@
     'blocked_for_native_policy', 'native_sfw_policy'];
 
   var lists = {};  // "<kin>|asc" or "<kin>|desc" -> {urls, at, loading}
-  var state = {cfg: '', kin: null, pos: -1, bag: [], shown: null, nextAt: 0, busy: false, failed: 0, noPass: 0, gatheredAt: 0};
+  var state = {cfg: '', kin: null, pos: -1, bag: [], shown: null, nextAt: 0, busy: false, failed: 0, noPass: 0, gatheredAt: 0, sheet: null};  // sheet: null until first told, so a new page always says
   var box = null, layers = [], front = 0;
 
   function config() {
@@ -284,6 +284,28 @@
     return page(null);
   }
 
+  /**
+   * A selfie's address as Kindroid's own page makes it (its resolver, module 252913): web
+   * addresses stay (storage2 becomes storage), and a bare storage path like
+   * "users/<uid>/…/<id>.jpg" (what "!enc:" values open to) goes on storage.kindroid.ai.
+   */
+  function fullUrl(value) {
+    var v = String(value || '').trim();
+    if (!v || /^(blob|data):/i.test(v)) return '';
+    if (/^https?:\/\//i.test(v)) {
+      v = v.replace(/^https:\/\/storage2\.kindroid\.ai\//, 'https://storage.kindroid.ai/');
+      return /^https:\/\//.test(v) ? v : '';
+    }
+    return 'https://storage.kindroid.ai/' + v.replace(/^\/+/, '');
+  }
+
+  /** Kindroid's own resizer for pictures on its storage: a phone-sized copy, so even 1-second slides load fast. */
+  function lighter(url) {
+    var m = url.match(/^https:\/\/storage\.kindroid\.ai\/(?!cdn-cgi\/)(.+)$/);
+    if (!m || /\.(gif|mp4|mov|webm|m4v)(\?|$)/i.test(m[1])) return url;
+    return 'https://storage.kindroid.ai/cdn-cgi/image/width=1080,fit=scale-down,format=auto/' + m[1];
+  }
+
   function toUrls(docs, uid) {
     return Promise.all(docs.map(function (d) {
       var x = {};
@@ -292,8 +314,7 @@
       var u = typeof x.url === 'string' && x.url ? x.url : x.thumbnail_url;
       if (typeof u !== 'string' || !u) return '';
       return (u.indexOf('!enc:') === 0 ? openEnc(u.substring(5), uid) : Promise.resolve(u)).then(function (open) {
-        open = String(open || '').replace(/^https:\/\/storage2\.kindroid\.ai\//, 'https://storage.kindroid.ai/');
-        return /^https:\/\//.test(open) ? open : '';
+        return lighter(fullUrl(open));
       });
     })).then(function (urls) {
       var seen = {};
@@ -592,14 +613,20 @@
   // (…_bubble-self / …_bubble-other), leaving out bare ones (pictures, videos, voice notes).
   // No blur behind them: the owner wants the picture clear through the box ("not blurry").
   // A soft shadow under the words keeps them readable on busy pictures.
-  var BUBBLES = {glass: {keep: 55, shadow: 0.45}, clear: {keep: 25, shadow: 0.7}};
+  // "none": no box at all (no colour, edge or shadow), only the words, with a darker glow
+  // around them so they stay readable on any picture.
+  var BUBBLES = {glass: {keep: 55, shadow: 0.45}, clear: {keep: 25, shadow: 0.7}, none: {keep: 0, shadow: 0.95}};
 
   function bubbleCss(b) {
     var rule = function (side, color) {
-      return '[class*="_bubble-' + side + '"]:not([class*="_bubble-bare"]):not([class*="_bubble-wrap"]){' +
-        'background:color-mix(in srgb, ' + color + ' ' + b.keep + '%, transparent) !important;' +
-        '-webkit-backdrop-filter:none !important;backdrop-filter:none !important;' +
-        'text-shadow:0 1px 3px rgba(0,0,0,' + b.shadow + ');}';
+      var box = b.keep > 0
+        ? 'background:color-mix(in srgb, ' + color + ' ' + b.keep + '%, transparent) !important;'
+        : 'background:transparent !important;border-color:transparent !important;box-shadow:none !important;';
+      var glow = b.keep > 0
+        ? 'text-shadow:0 1px 3px rgba(0,0,0,' + b.shadow + ');'
+        : 'text-shadow:0 0 2px rgba(0,0,0,.95),0 1px 4px rgba(0,0,0,.9),0 0 10px rgba(0,0,0,.6);';
+      return '[class*="_bubble-' + side + '"]:not([class*="_bubble-bare"]):not([class*="_bubble-wrap"]){' + box +
+        '-webkit-backdrop-filter:none !important;backdrop-filter:none !important;' + glow + '}';
     };
     return rule('other', 'var(--chat-message-color-other, var(--chat-message-surface-other, #1b1a1c))') +
       rule('self', 'var(--chat-message-color-self, var(--color-cta, #964f43))');
@@ -619,6 +646,126 @@
     }
     if (el.textContent !== css) el.textContent = css;
   }
+
+  // ---- ✨ Ideas button on Kindroid's scene setting box ----
+  // The box (from kindroid.ai's code): a textarea with maxlength 160 and the placeholder
+  // "location, attire, activity, time, etc." in the "Set the scene" sheet, or the
+  // "Suggested scene" one (…_suggestion-input). It's React's, so the button isn't put inside
+  // React's own elements: it floats over the box's corner from the end of the page.
+
+  function sceneBoxes() {
+    return Array.prototype.filter.call(document.querySelectorAll('textarea'), function (t) {
+      var hint = (t.getAttribute('placeholder') || '').toLowerCase();
+      var scene = t.getAttribute('maxlength') === '160' || /attire/.test(hint) || /_suggestion-input/.test(String(t.className));
+      return scene && t.offsetWidth > 0 && t.offsetHeight > 0;
+    });
+  }
+
+  /** What the AI gets to fit the idea to the chat: the Kin's name, the box's text, the last few messages. */
+  function sceneContext(box) {
+    var name = '';
+    var names = document.querySelectorAll('[class*="_name"]');
+    for (var i = 0; i < names.length && !name; i++) {
+      var r = names[i].getBoundingClientRect(), t = (names[i].textContent || '').trim();
+      if (r.top < innerHeight * 0.25 && r.width > 0 && t && t.length <= 40) name = t;
+    }
+    var bubbles = Array.prototype.filter.call(
+      document.querySelectorAll('[class*="_bubble-self"], [class*="_bubble-other"]'),
+      function (b) { return !/_bubble-(bare|wrap)/.test(String(b.className)); }).slice(-6);
+    var recent = bubbles.map(function (b) {
+      var text = (b.innerText || b.textContent || '').replace(/\u2026|\.\.\.|▷|\b\d{1,2}:\d{2}\b/g, ' ').replace(/\s+/g, ' ').trim();
+      return {mine: /_bubble-self/.test(String(b.className)), text: text.slice(0, 300)};
+    }).filter(function (m) { return m.text; });
+    return {name: name, current: box ? box.value : '', recent: recent};
+  }
+
+  function showIdeasButton() {
+    var boxes = sceneBoxes(), box = boxes[boxes.length - 1];
+    var button = document.getElementById('kp-ideas');
+    if (!box) {
+      if (button) button.style.display = 'none';
+      return;
+    }
+    if (!button) {
+      button = document.createElement('button');
+      button.id = 'kp-ideas';
+      button.type = 'button';
+      button.textContent = '✨ Ideas';
+      // pointer-events:auto: a sheet that's open may turn taps off on the rest of the page.
+      button.style.cssText = 'position:fixed;z-index:2147483000;pointer-events:auto;padding:6px 12px;border-radius:999px;' +
+        'border:1px solid rgba(255,111,165,.7);background:rgba(40,20,32,.92);color:#fff;font:600 13px system-ui,sans-serif;' +
+        'box-shadow:0 2px 8px rgba(0,0,0,.4);';
+      // The sheet mustn't take a tap on the button as a tap outside it (which would close it).
+      ['pointerdown', 'mousedown', 'touchstart'].forEach(function (kind) {
+        button.addEventListener(kind, function (e) { e.stopPropagation(); }, true);
+      });
+      button.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var target = sceneBoxes().pop() || null;
+        window.__kpSceneTarget = target;
+        try { bridge.ideas(JSON.stringify(sceneContext(target))); } catch (err) {}
+      }, true);
+      document.body.appendChild(button);
+    }
+    var r = box.getBoundingClientRect();
+    button.style.display = '';
+    button.style.top = Math.max(0, r.bottom - 38) + 'px';
+    button.style.left = Math.max(0, r.right - 98) + 'px';
+  }
+
+  // ---- Kindroid's sheets (gallery, scene, settings): the app hides its 🖼 button while one is
+  // open, and the phone's back button closes the sheet instead of leaving the chat. ----
+
+  function sheetOpen() {
+    var spots = document.querySelectorAll('[role="dialog"], [aria-modal="true"]');
+    for (var i = 0; i < spots.length; i++) {
+      var r = spots[i].getBoundingClientRect();
+      if (r.width > 0 && r.height > 0 && getComputedStyle(spots[i]).visibility !== 'hidden') return spots[i];
+    }
+    return null;
+  }
+
+  function tellSheet() {
+    var open = !!sheetOpen();
+    if (open === state.sheet) return;
+    state.sheet = open;
+    try { bridge.sheet(open); } catch (e) {}
+  }
+
+  /** Back with a sheet open: Escape (what sheets close on), then its close button, then back. */
+  window.__kpCloseSheet = function () {
+    var esc = function (target) {
+      ['keydown', 'keyup'].forEach(function (kind) {
+        target.dispatchEvent(new KeyboardEvent(kind, {key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true}));
+      });
+    };
+    esc(document.activeElement || document.body);
+    if (document.activeElement !== document.body) esc(document.body);
+    setTimeout(function () {
+      var sheet = sheetOpen();
+      if (!sheet) return;
+      var close = sheet.querySelector('[aria-label*="close" i], [aria-label*="dismiss" i], [data-dismiss]');
+      if (close) close.click();
+      setTimeout(function () { if (sheetOpen()) history.back(); }, 300);
+    }, 300);
+    return true;
+  };
+
+  /** Puts [text] in the scene box the way typing would (React only hears an "input" event). */
+  window.__kpSetScene = function (text) {
+    var t = window.__kpSceneTarget;
+    if (!t || !t.isConnected || !t.offsetWidth) t = sceneBoxes().pop();
+    if (!t) return false;
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(t, String(text));
+    t.dispatchEvent(new Event('input', {bubbles: true}));
+    t.focus();
+    return true;
+  };
+
+  window.__kpSceneContext = function () {
+    return JSON.stringify(sceneContext(sceneBoxes().pop() || null));
+  };
 
   function slideMs(cfg) {
     return Math.max(1, Number(cfg.seconds) || 10) * 1000;
@@ -640,6 +787,8 @@
     if (document.visibilityState === 'hidden') return;
     var cfg = config(), key = JSON.stringify(cfg);
     styleBubbles(cfg.bubbles);
+    showIdeasButton();
+    tellSheet();
     if (key !== state.cfg) {
       state.cfg = key;
       restart();

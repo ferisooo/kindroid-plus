@@ -53,6 +53,8 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         root = FrameLayout(this).apply { setBackgroundColor(BACKGROUND) }
+        // Nobody with a cable can look inside the logged-in page (phones for app makers still allow it).
+        WebView.setWebContentsDebuggingEnabled(false)
         slides = Slides(this, root)
 
         web = newPage()
@@ -214,7 +216,12 @@ class MainActivity : Activity() {
         override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) = slides.pageChanged(url)
 
         // Kindroid moves between pages without loading new ones; this hears those moves too.
-        override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) = slides.pageChanged(url)
+        // The page is remembered right away too, so even if the app is closed while on screen
+        // it opens there again.
+        override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
+            slides.pageChanged(url)
+            if (view == web) rememberPage()
+        }
     }
 
     private inner class MainChrome : WebChromeClient() {
@@ -316,6 +323,8 @@ class MainActivity : Activity() {
         when {
             window != null && window.canGoBack() -> window.goBack()
             window != null -> closePopup()
+            // A Kindroid sheet (the gallery, the scene…) adds no page to go back from: close it.
+            slides.sheetOpen -> slides.closeSheet(web)
             web.canGoBack() -> web.goBack()
             // Hides the app instead of closing it, so it opens again at once, still on the same page.
             else -> moveTaskToBack(true)

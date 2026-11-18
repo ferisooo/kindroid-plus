@@ -16,11 +16,14 @@
         <meta-data android:name="android.webkit.WebView.MetricsOptOut" android:value="true" />
 
         <!-- configChanges: turning the phone doesn't reload Kindroid.
-             adjustResize: the chat box stays above the keyboard. -->
+             adjustResize: the chat box stays above the keyboard.
+             singleTask: opening the app from anywhere comes back to the same page,
+             never a second copy of it. -->
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode"
             android:exported="true"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

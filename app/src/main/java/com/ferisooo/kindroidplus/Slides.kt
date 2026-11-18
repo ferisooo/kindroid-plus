@@ -14,8 +14,6 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
@@ -62,6 +60,22 @@ class Slides(private val activity: Activity, private val root: FrameLayout) {
         fun settings(): String =
             JSONObject().put("on", on).put("order", order).put("seconds", seconds).put("bubbles", bubbles).toString()
 
+        /** A Kindroid sheet (gallery, scene, settings) opened or closed on the page. */
+        @JavascriptInterface
+        fun sheet(open: Boolean) {
+            activity.runOnUiThread {
+                sheetOpen = open
+                pageChanged(lastUrl)
+            }
+        }
+
+        /** The ✨ Ideas button on Kindroid's scene box: what the page knows about the chat. */
+        @JavascriptInterface
+        fun ideas(json: String) {
+            val context = runCatching { JSONObject(json) }.getOrNull()
+            activity.runOnUiThread { sceneIdeas.open(context) }
+        }
+
         @JavascriptInterface
         fun report(json: String) {
             val said = runCatching { JSONObject(json) }.getOrNull() ?: return
@@ -76,7 +90,35 @@ class Slides(private val activity: Activity, private val root: FrameLayout) {
         }
     }
 
-    fun attach(web: WebView) = web.addJavascriptInterface(Bridge(), bridgeName)
+    /** The page you see (the last one attached), for putting a scene idea in its box. */
+    private var page: WebView? = null
+
+    fun attach(web: WebView) {
+        page = web
+        web.addJavascriptInterface(Bridge(), bridgeName)
+    }
+
+    /** ✨ Scene ideas: the owner's own AI writes a suggestion for Kindroid's scene box. */
+    val sceneIdeas = SceneIdeas(activity) { text, done ->
+        val web = page
+        if (web == null) done(false)
+        else web.evaluateJavascript("window.__kpSetScene ? window.__kpSetScene(${JSONObject.quote(text)}) : false") { done(it == "true") }
+    }
+
+    /** Opens scene ideas from the menu, with what the page knows about the chat (if it's a chat). */
+    private fun openIdeasFromMenu() {
+        val web = page
+        if (web == null) {
+            sceneIdeas.open(null)
+            return
+        }
+        web.evaluateJavascript("window.__kpSceneContext ? window.__kpSceneContext() : null") { result ->
+            // The page's answer comes as JSON: a quoted string holding the context's JSON.
+            val context = runCatching { org.json.JSONArray("[$result]").getString(0) }.getOrNull()
+                ?.let { runCatching { JSONObject(it) }.getOrNull() }
+            sceneIdeas.open(context)
+        }
+    }
 
     /** Starts the slideshow on a Kindroid page (it runs once per page and watches for chats itself). */
     fun inject(web: WebView) = web.evaluateJavascript(script("show"), null)
@@ -164,9 +206,22 @@ class Slides(private val activity: Activity, private val root: FrameLayout) {
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> place() }
     }
 
-    /** The button only shows in a Kin's chat (not group chats or other pages). */
+    /** Whether one of Kindroid's sheets is open on the page (then the 🖼 button keeps out of its way). */
+    var sheetOpen = false
+        private set
+    private var lastUrl: String? = null
+
+    /** The button only shows in a Kin's chat (not group chats or other pages), and not over a sheet. */
     fun pageChanged(url: String?) {
-        button.visibility = if (isKinChat(url)) View.VISIBLE else View.GONE
+        lastUrl = url
+        button.visibility = if (isKinChat(url) && !sheetOpen) View.VISIBLE else View.GONE
+    }
+
+    /** The phone's back button with a sheet open: closes the sheet instead of leaving the chat. */
+    fun closeSheet(web: WebView) {
+        web.evaluateJavascript("window.__kpCloseSheet ? window.__kpCloseSheet() : false") { done ->
+            if (done != "true" && web.canGoBack()) web.goBack()
+        }
     }
 
     private fun room(): Float = (root.height - root.paddingTop - root.paddingBottom - button.height).coerceAtLeast(0).toFloat()
@@ -220,15 +275,17 @@ class Slides(private val activity: Activity, private val root: FrameLayout) {
             isChecked = on
             setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean(ON, checked).apply() }
         })
-        box.addView(heading("Order"))
-        box.addView(choices(ORDERS, order) { prefs.edit().putString(ORDER, it).apply() })
-        box.addView(heading("Change every"))
-        box.addView(choices(SECONDS_CHOICES.map { it.toString() to secondsLabel(it) }, seconds.toString()) {
-            prefs.edit().putInt(SECONDS, it.toInt()).apply()
+        // Three drop-downs side by side: order, speed, and how see-through the message boxes are
+        // (Kindroid's own are always solid).
+        box.addView(LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(6), 0, 0)
+            addView(dropdown("Order", ORDERS, order) { prefs.edit().putString(ORDER, it).apply() }, third())
+            addView(dropdown("Speed", SECONDS_CHOICES.map { Triple(it.toString(), secondsLabel(it), shortSeconds(it)) }, seconds.toString()) {
+                prefs.edit().putInt(SECONDS, it.toInt()).apply()
+            }, third())
+            addView(dropdown("Boxes", BUBBLE_CHOICES, bubbles) { prefs.edit().putString(BUBBLES, it).apply() }, third())
         })
-        // Kindroid's message boxes are always solid; these let the background show through.
-        box.addView(heading("Message boxes"))
-        box.addView(choices(BUBBLE_CHOICES, bubbles) { prefs.edit().putString(BUBBLES, it).apply() })
         status()?.let { line ->
             box.addView(TextView(activity).apply {
                 text = line
@@ -237,11 +294,62 @@ class Slides(private val activity: Activity, private val root: FrameLayout) {
                 setPadding(0, dp(14), 0, 0)
             })
         }
-        AlertDialog.Builder(activity, android.R.style.Theme_Material_Dialog_Alert)
-            .setTitle("Selfie slideshow 💕")
+        box.addView(heading("✨ Scene ideas"))
+        var dialog: AlertDialog? = null
+        box.addView(LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(pill("Write a scene ✨") { dialog?.dismiss(); openIdeasFromMenu() }, half())
+            addView(pill(sceneIdeas.provider?.let { "AI: ${it.label}" } ?: "Set up your AI") { dialog?.dismiss(); sceneIdeas.setUp() }, half())
+        })
+        dialog = AlertDialog.Builder(activity, android.R.style.Theme_Material_Dialog_Alert)
+            .setTitle("Kindroid+ 💕")
             .setView(ScrollView(activity).apply { addView(box) })
             .setPositiveButton("Done", null)
             .show()
+    }
+
+    private fun third() = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(3); marginEnd = dp(3) }
+
+    private fun half() = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(3); marginEnd = dp(3) }
+
+    /** A rounded button. */
+    private fun pill(words: String, onTap: (View) -> Unit) = TextView(activity).apply {
+        text = words
+        textSize = 14f
+        setTextColor(Color.WHITE)
+        gravity = Gravity.CENTER
+        maxLines = 1
+        ellipsize = android.text.TextUtils.TruncateAt.END
+        setPadding(dp(8), dp(11), dp(8), dp(11))
+        background = GradientDrawable().apply {
+            cornerRadius = dp(22).toFloat()
+            setColor(Color.argb(0x33, 0xFF, 0xFF, 0xFF))
+            setStroke(dp(1), Color.argb(0x66, 0xFF, 0x6F, 0xA5))
+        }
+        setOnClickListener { onTap(it) }
+    }
+
+    /**
+     * A small title with a drop-down button under it. [options]: (key, words in the list,
+     * short words on the button). Picking one saves it at once.
+     */
+    private fun dropdown(title: String, options: List<Triple<String, String, String>>, picked: String, onPick: (String) -> Unit): View {
+        val column = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        column.addView(heading(title).apply { gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(4)) })
+        val shown = options.firstOrNull { it.first == picked } ?: options.first()
+        column.addView(pill("${shown.third} ▾") { v ->
+            android.widget.PopupMenu(activity, v).apply {
+                options.forEachIndexed { i, o -> menu.add(0, i, i, o.second) }
+                setOnMenuItemClickListener { item ->
+                    val o = options[item.itemId]
+                    onPick(o.first)
+                    (v as TextView).text = "${o.third} ▾"
+                    true
+                }
+                show()
+            }
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        return column
     }
 
     /** What the page found last time, for the bottom of the pop-up. */
@@ -271,21 +379,6 @@ class Slides(private val activity: Activity, private val root: FrameLayout) {
         setPadding(0, dp(16), 0, dp(2))
     }
 
-    private fun choices(options: List<Pair<String, String>>, picked: String, onPick: (String) -> Unit) =
-        RadioGroup(activity).apply {
-            options.forEach { (key, label) ->
-                val radio = RadioButton(activity).apply {
-                    id = View.generateViewId()
-                    text = label
-                    textSize = 16f
-                    tag = key
-                }
-                addView(radio)
-                if (key == picked) check(radio.id)
-            }
-            setOnCheckedChangeListener { group, id -> (group.findViewById<View>(id)?.tag as? String)?.let(onPick) }
-        }
-
     private fun dp(value: Int): Int = (value * activity.resources.displayMetrics.density).toInt()
 
     companion object {
@@ -300,9 +393,20 @@ class Slides(private val activity: Activity, private val root: FrameLayout) {
         private const val GATHER_LONGEST_MS = 3 * 60 * 1000L
         private val KIN_ID = Regex("[A-Za-z0-9_-]{1,128}")
 
-        val ORDERS = listOf("random" to "Random", "newest" to "Newest first", "oldest" to "Oldest first")
+        val ORDERS = listOf(
+            Triple("random", "Random", "Random"),
+            Triple("newest", "Newest first", "Newest"),
+            Triple("oldest", "Oldest first", "Oldest"),
+        )
         val SECONDS_CHOICES = listOf(1, 2, 3, 5, 10, 30, 60, 300)
-        val BUBBLE_CHOICES = listOf("solid" to "Solid (Kindroid's own)", "glass" to "See-through", "clear" to "Very see-through")
+        val BUBBLE_CHOICES = listOf(
+            Triple("solid", "Solid (Kindroid's own)", "Solid"),
+            Triple("glass", "See-through", "See-through"),
+            Triple("clear", "Very see-through", "Very clear"),
+            Triple("none", "Invisible (only the words)", "Invisible"),
+        )
+
+        fun shortSeconds(s: Int) = if (s % 60 == 0) "${s / 60} min" else "$s sec"
 
         fun secondsLabel(s: Int) = when {
             s == 1 -> "1 second"
