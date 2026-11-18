@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- enableOnBackInvokedCallback="false": targeting Android 16, the back button would
+         skip onBackPressed (going back a page in Kindroid); this keeps it. -->
+    <application
+        android:allowBackup="false"
+        android:enableOnBackInvokedCallback="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="Kindroid+"
+        android:theme="@style/AppTheme">
+
+        <!-- The web engine doesn't send Google usage statistics. -->
+        <meta-data android:name="android.webkit.WebView.MetricsOptOut" android:value="true" />
+
+        <!-- configChanges: turning the phone doesn't reload Kindroid.
+             adjustResize: the chat box stays above the keyboard. -->
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
