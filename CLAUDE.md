@@ -183,7 +183,10 @@ big boxes, so those boxes get `padding-bottom: 46px` (`<style
 id="kp-ideas-room">`) and the pill sits in that room; the 🖼 button also hides
 while the Kin's menu has the chat card peeked aside (`[class*="_card-peeked"]`,
 `bridge.cover`; back there is left as Kindroid has it); "Remove key" only shows
-when a key is saved. The PC session's emulator lost its Kindroid login after
+when a key is saved. While the Kin's menu is open (chat card peeked), the
+slideshow box turns plain dark (`darkenForMenu`: Kindroid's black, pictures
+hidden, videos paused, no new slides): the owner's screenshot showed the menu's
+words unreadable over a selfie. The PC session's emulator lost its Kindroid login after
 updating 7 → 10, but only "Forgot?" touches the login in this app and it wipes
 everything (other site data was still there), so the cause wasn't found here.
 

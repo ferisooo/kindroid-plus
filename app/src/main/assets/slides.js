@@ -661,6 +661,29 @@
     return box;
   }
 
+  /**
+   * The Kin's menu (tap the avatar) slides the chat aside and its words sit right over the
+   * background: with selfies there they were hard to read (owner's screenshot). While it's
+   * open the slideshow turns into plain dark, so the pictures only show behind the chat.
+   */
+  function darkenForMenu(peek) {
+    if (!box) return;
+    if (peek) {
+      box.style.opacity = '1';
+      box.style.filter = '';
+      box.style.backgroundColor = 'var(--v2-fixed-black, #0f0e0f)';
+    } else {
+      box.style.backgroundColor = '';
+    }
+    layers.forEach(function (l) {
+      l.style.visibility = peek ? 'hidden' : '';
+      Array.prototype.forEach.call(l.querySelectorAll('video'), function (v) {
+        if (peek) v.pause();
+        else if (v.paused) { var p = v.play(); if (p && p.catch) p.catch(function () {}); }
+      });
+    });
+  }
+
   /** As see-through and as blurred as the background chosen in Kindroid. */
   function matchKindroid() {
     var theirs = null, kids = box.parentNode.children;
@@ -1165,7 +1188,8 @@
       try { bridge.sheet(open); } catch (e) {}
     }
     // The 🖼 button also keeps out of the way of the Kin's menu (back there works as it is).
-    var covered = open || chatPeeked();
+    state.peeked = chatPeeked();
+    var covered = open || state.peeked;
     if (covered !== state.covered) {
       state.covered = covered;
       try { bridge.cover(covered); } catch (e) {}
@@ -1245,6 +1269,8 @@
     if (!items.length) return;
     if (!ensureLayers()) return;
     matchKindroid();
+    darkenForMenu(state.peeked);
+    if (state.peeked) return;  // no new pictures while the menu covers them
     if (!state.busy && Date.now() >= state.nextAt) {
       var item = nextItem(items, cfg);
       if (item) show(item, cfg, kin);
