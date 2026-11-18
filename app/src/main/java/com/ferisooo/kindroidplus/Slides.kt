@@ -31,7 +31,12 @@ import kotlin.math.abs
  * one, scrolls through it and keeps the selfies it shows ([gatherFrom]), at most every
  * [GATHER_EVERY_MS] per Kin.
  */
-class Slides(private val activity: Activity, private val root: FrameLayout) {
+class Slides(
+    private val activity: Activity,
+    private val root: FrameLayout,
+    private val myPictures: MyPictures,
+    private val lock: Lock,
+) {
 
     private val prefs = activity.getSharedPreferences("slides", Context.MODE_PRIVATE)
 
@@ -54,11 +59,22 @@ class Slides(private val activity: Activity, private val root: FrameLayout) {
     private val order get() = prefs.getString(ORDER, null)?.takeIf { it in ORDERS.map { o -> o.first } } ?: "random"
     private val seconds get() = prefs.getInt(SECONDS, 10).takeIf { it in SECONDS_CHOICES } ?: 10
     private val bubbles get() = prefs.getString(BUBBLES, null)?.takeIf { it in BUBBLE_CHOICES.map { b -> b.first } } ?: "glass"
+    private val showPhotos get() = prefs.getBoolean(PHOTOS, true)
+    private val showVideos get() = prefs.getBoolean(VIDEOS, true)
+    private val showMine get() = prefs.getBoolean(MINE, true)
+    private val favoritesOnly get() = prefs.getBoolean(FAVORITES, false)
 
     private inner class Bridge {
         @JavascriptInterface
-        fun settings(): String =
-            JSONObject().put("on", on).put("order", order).put("seconds", seconds).put("bubbles", bubbles).toString()
+        fun settings(): String = JSONObject()
+            .put("on", on).put("order", order).put("seconds", seconds).put("bubbles", bubbles)
+            .put("photos", showPhotos).put("videos", showVideos).put("mine", showMine).put("mineGen", myPictures.gen)
+            .put("favorites", favoritesOnly)
+            .toString()
+
+        /** My pictures for the slideshow: [{url, at}]. */
+        @JavascriptInterface
+        fun myPictures(): String = myPictures.json()
 
         /** A Kindroid sheet (gallery, scene, settings) opened or closed on the page. */
         @JavascriptInterface
@@ -69,11 +85,11 @@ class Slides(private val activity: Activity, private val root: FrameLayout) {
             }
         }
 
-        /** The ✨ Ideas button on Kindroid's scene box: what the page knows about the chat. */
+        /** A ✨ button on one of Kindroid's boxes: what the page knows about the box and the chat. */
         @JavascriptInterface
         fun ideas(json: String) {
             val context = runCatching { JSONObject(json) }.getOrNull()
-            activity.runOnUiThread { sceneIdeas.open(context) }
+            activity.runOnUiThread { if (!lock.isShowing) ideas.open(context) }
         }
 
         @JavascriptInterface
@@ -98,26 +114,32 @@ class Slides(private val activity: Activity, private val root: FrameLayout) {
         web.addJavascriptInterface(Bridge(), bridgeName)
     }
 
-    /** ✨ Scene ideas: the owner's own AI writes a suggestion for Kindroid's scene box. */
-    val sceneIdeas = SceneIdeas(activity) { text, done ->
+    /** ✨ Ideas: the owner's own AI writes for Kindroid's boxes; "Use it" fills the box of that kind. */
+    val ideas = Ideas(activity) { text, kind, done ->
         val web = page
         if (web == null) done(false)
-        else web.evaluateJavascript("window.__kpSetScene ? window.__kpSetScene(${JSONObject.quote(text)}) : false") { done(it == "true") }
+        else web.evaluateJavascript("window.__kpPut ? window.__kpPut(${JSONObject.quote(text)}, ${JSONObject.quote(kind)}) : false") { done(it == "true") }
     }
 
-    /** Opens scene ideas from the menu, with what the page knows about the chat (if it's a chat). */
-    private fun openIdeasFromMenu() {
+    /** Opens [kind] ideas from the menu, with what the page knows about the chat (if it's a chat). */
+    private fun openIdeasFromMenu(kind: String) {
         val web = page
         if (web == null) {
-            sceneIdeas.open(null)
+            ideas.open(JSONObject().put("kind", kind))
             return
         }
-        web.evaluateJavascript("window.__kpSceneContext ? window.__kpSceneContext() : null") { result ->
+        web.evaluateJavascript("window.__kpContext ? window.__kpContext(${JSONObject.quote(kind)}) : null") { result ->
             // The page's answer comes as JSON: a quoted string holding the context's JSON.
             val context = runCatching { org.json.JSONArray("[$result]").getString(0) }.getOrNull()
-                ?.let { runCatching { JSONObject(it) }.getOrNull() }
-            sceneIdeas.open(context)
+                ?.let { runCatching { JSONObject(it) }.getOrNull() } ?: JSONObject().put("kind", kind)
+            ideas.open(context)
         }
+    }
+
+    /** Runs [js] on the page you see, and hands its answer (JSON) to [done]. */
+    private fun onPage(js: String, done: (String?) -> Unit) {
+        val web = page ?: return done(null)
+        web.evaluateJavascript(js) { done(it) }
     }
 
     /** Starts the slideshow on a Kindroid page (it runs once per page and watches for chats itself). */
@@ -269,8 +291,9 @@ class Slides(private val activity: Activity, private val root: FrameLayout) {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(22), dp(6), dp(22), dp(4))
         }
+        var dialog: AlertDialog? = null
         box.addView(Switch(activity).apply {
-            text = "Selfies as the chat background"
+            text = "Slideshow behind the chat"
             textSize = 16f
             isChecked = on
             setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean(ON, checked).apply() }
@@ -286,6 +309,35 @@ class Slides(private val activity: Activity, private val root: FrameLayout) {
             }, third())
             addView(dropdown("Boxes", BUBBLE_CHOICES, bubbles) { prefs.edit().putString(BUBBLES, it).apply() }, third())
         })
+        // What takes turns: the Kin's selfie photos, video selfies (moving), and my own pictures.
+        box.addView(heading("Show"))
+        box.addView(pill(showLabel()) { v -> chooseShow(v as TextView) })
+        box.addView(Switch(activity).apply {
+            text = "⭐ Favorites only"
+            textSize = 16f
+            isChecked = favoritesOnly
+            setPadding(0, dp(12), 0, 0)
+            setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean(FAVORITES, checked).apply() }
+        })
+        box.addView(LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(6), 0, 0)
+            addView(pill("⭐ Pick favorites") {
+                dialog?.dismiss()
+                onPage("window.__kpOpenFavorites ? window.__kpOpenFavorites() : false") {
+                    if (it != "true") toast("Open a chat with your Kin first")
+                }
+            }, half())
+            addView(pill("⭐ Star this one") {
+                onPage("window.__kpStarCurrent ? window.__kpStarCurrent() : 'none'") {
+                    toast(when (it) {
+                        "\"on\"" -> "⭐ Starred!"
+                        "\"off\"" -> "Unstarred"
+                        else -> "Nothing showing yet"
+                    })
+                }
+            }, half())
+        })
         status()?.let { line ->
             box.addView(TextView(activity).apply {
                 text = line
@@ -294,18 +346,56 @@ class Slides(private val activity: Activity, private val root: FrameLayout) {
                 setPadding(0, dp(14), 0, 0)
             })
         }
-        box.addView(heading("✨ Scene ideas"))
-        var dialog: AlertDialog? = null
+        box.addView(heading("📱 My pictures"))
         box.addView(LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(pill("Write a scene ✨") { dialog?.dismiss(); openIdeasFromMenu() }, half())
-            addView(pill(sceneIdeas.provider?.let { "AI: ${it.label}" } ?: "Set up your AI") { dialog?.dismiss(); sceneIdeas.setUp() }, half())
+            addView(pill("Add pictures") { dialog?.dismiss(); myPictures.pick() }, half())
+            addView(pill("See all (${myPictures.count()})") { dialog?.dismiss(); myPictures.manage() }, half())
         })
+        box.addView(heading("✨ AI ideas"))
+        box.addView(small("Tap ✨ on Kindroid's boxes (scene, personality, memories…) or 💬 over the message box."))
+        box.addView(LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(6), 0, 0)
+            addView(pill("Write a scene ✨") { dialog?.dismiss(); openIdeasFromMenu("scene") }, half())
+            addView(pill(ideas.provider?.let { "AI: ${it.label}" } ?: "Set up your AI") { dialog?.dismiss(); ideas.setUp() }, half())
+        })
+        box.addView(heading("🔒 App lock"))
+        box.addView(pill(lock.kind?.let { "Lock: ${it.label} ▾" } ?: "Lock: off ▾") { dialog?.dismiss(); lock.settings() })
         dialog = AlertDialog.Builder(activity, android.R.style.Theme_Material_Dialog_Alert)
             .setTitle("Kindroid+ 💕")
             .setView(ScrollView(activity).apply { addView(box) })
             .setPositiveButton("Done", null)
             .show()
+    }
+
+    private fun showLabel(): String {
+        val parts = listOfNotNull(
+            "Photos".takeIf { showPhotos },
+            "Videos".takeIf { showVideos },
+            "My pictures".takeIf { showMine },
+        )
+        return (if (parts.isEmpty()) "Nothing" else parts.joinToString(" · ")) + " ▾"
+    }
+
+    private fun chooseShow(button: TextView) {
+        val names = arrayOf("Kin's selfie photos", "Kin's video selfies (moving)", "My own pictures")
+        val keys = arrayOf(PHOTOS, VIDEOS, MINE)
+        val checked = booleanArrayOf(showPhotos, showVideos, showMine)
+        AlertDialog.Builder(activity, android.R.style.Theme_Material_Dialog_Alert)
+            .setTitle("Show in the slideshow")
+            .setMultiChoiceItems(names, checked) { _, which, isChecked -> prefs.edit().putBoolean(keys[which], isChecked).apply() }
+            .setPositiveButton("Done", null)
+            .setOnDismissListener { button.text = showLabel() }
+            .show()
+    }
+
+    private fun toast(words: String) = android.widget.Toast.makeText(activity, words, android.widget.Toast.LENGTH_SHORT).show()
+
+    private fun small(words: String) = TextView(activity).apply {
+        text = words
+        textSize = 13f
+        alpha = 0.7f
     }
 
     private fun third() = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(3); marginEnd = dp(3) }
@@ -358,18 +448,33 @@ class Slides(private val activity: Activity, private val root: FrameLayout) {
         val lines = mutableListOf<String>()
         if (gatherer != null) lines += "🔎 Looking through the selfie gallery… $gatheredSoFar so far"
         if (json != null) {
-            val count = json.optInt("count")
-            val selfies = if (count == 1) "1 selfie" else "$count selfies"
             val fromGallery = json.optString("from") == "gallery"
+            val found = listOfNotNull(
+                plural(json.optInt("photos"), "photo")?.let { if (fromGallery) "$it from the gallery" else it },
+                plural(json.optInt("videos"), "video"),
+                plural(json.optInt("mine"), "of my pictures", "of my pictures"),
+            )
             when {
-                count > 0 -> lines += "Found $selfies" + if (fromGallery) " in the gallery" else ""
+                found.isNotEmpty() -> lines += "Found " + found.joinToString(", ")
                 json.optString("waiting").isNotEmpty() -> lines += json.optString("waiting") + "…"
                 json.optString("problem").isNotEmpty() -> lines += "⚠️ " + json.optString("problem")
                 fromGallery && gatherer == null -> lines += "⚠️ No selfies found yet"
             }
+            if (json.optString("problem").isNotEmpty() && found.isNotEmpty()) lines += "⚠️ " + json.optString("problem")
+            val favorites = json.optInt("favorites")
+            if (favoritesOnly) lines += if (json.optBoolean("noFavs") || favorites == 0) "⭐ No favorites yet, so all of them show" else "⭐ Showing your $favorites favorites"
+            else if (favorites > 0) lines += "⭐ $favorites starred"
             json.optString("listProblem").takeIf { it.isNotEmpty() }?.let { lines += "($it)" }
+            json.optString("videoProblem").takeIf { it.isNotEmpty() }?.let { lines += "($it)" }
         }
         return lines.takeIf { it.isNotEmpty() }?.joinToString("\n")
+    }
+
+    private fun plural(n: Int, one: String, many: String = one + "s"): String? = when {
+        n <= 0 -> null
+        n == 1 && one.startsWith("of ") -> "1 $one"
+        n == 1 -> "1 $one"
+        else -> "$n $many"
     }
 
     private fun heading(words: String) = TextView(activity).apply {
@@ -386,6 +491,10 @@ class Slides(private val activity: Activity, private val root: FrameLayout) {
         private const val ORDER = "order"
         private const val SECONDS = "seconds"
         private const val BUBBLES = "bubbles"
+        private const val PHOTOS = "photos"
+        private const val VIDEOS = "videos"
+        private const val MINE = "mine"
+        private const val FAVORITES = "favorites"
         private const val BUTTON_AT = "button_at"
         private const val GATHERED_AT = "gathered_at:"
         private const val RESTING_ALPHA = 0.75f

@@ -37,7 +37,7 @@
   var FIELDS = ['url', 'thumbnail_url', 'timestamp', 'status', 'deleted', 'output_moderation_status',
     'blocked_for_native_policy', 'native_sfw_policy'];
 
-  var lists = {};  // "<kin>|asc" or "<kin>|desc" -> {urls, at, loading}
+  var lists = {};  // kin id -> {photos, videos, at, loading, problem, soon, videoProblem}
   var state = {cfg: '', kin: null, pos: -1, bag: [], shown: null, nextAt: 0, busy: false, failed: 0, noPass: 0, gatheredAt: 0, sheet: null};  // sheet: null until first told, so a new page always says
   var box = null, layers = [], front = 0;
 
@@ -236,21 +236,29 @@
   var SHAPES = [{page: PAGE, select: true}, {page: 12, select: false}];
   var shapeOk = -1;
 
-  function fetchSelfies(auth, appCheck, kin, dir) {
+  /** The fields read from each selfie: photos ("Selfies") and videos ("VideoSelfies"). */
+  var READS = {
+    Selfies: FIELDS,
+    VideoSelfies: ['video_url', 'image_url', 'timestamp', 'status', 'deleted', 'output_moderation_status',
+      'blocked_for_native_policy', 'native_sfw_policy']
+  };
+
+  function fetchSelfies(auth, appCheck, kin, collection) {
     var first = shapeOk >= 0 ? shapeOk : 0;
-    return fetchWith(SHAPES[first], auth, appCheck, kin, dir).then(function (docs) {
+    return fetchWith(SHAPES[first], auth, appCheck, kin, collection).then(function (docs) {
       shapeOk = first;
       return docs;
     }, function (e) {
       if (first !== 0 || !e.refused) throw e;
-      return fetchWith(SHAPES[1], auth, appCheck, kin, dir).then(function (docs) {
+      return fetchWith(SHAPES[1], auth, appCheck, kin, collection).then(function (docs) {
         shapeOk = 1;
         return docs;
       }, function (e2) { throw e2.refused ? e : e2; });
     });
   }
 
-  function fetchWith(shape, auth, appCheck, kin, dir) {
+  /** Newest first, [shape.page] at a time, up to [MOST] (300 when asking 12 at a time). */
+  function fetchWith(shape, auth, appCheck, kin, collection) {
     var url = 'https://firestore.googleapis.com/v1/projects/kindroid-ai/databases/(default)/documents/Users/' +
       encodeURIComponent(auth.uid) + '/AIs/' + encodeURIComponent(kin) + ':runQuery';
     var headers = {'Authorization': 'Bearer ' + auth.token, 'Content-Type': 'application/json'};
@@ -259,18 +267,19 @@
     var docs = [];
     function page(after) {
       var q = {
-        from: [{collectionId: 'Selfies'}],
-        orderBy: [{field: {fieldPath: 'timestamp'}, direction: dir === 'asc' ? 'ASCENDING' : 'DESCENDING'}],
+        from: [{collectionId: collection}],
+        orderBy: [{field: {fieldPath: 'timestamp'}, direction: 'DESCENDING'}],
         limit: shape.page
       };
-      if (shape.select) q.select = {fields: FIELDS.map(function (f) { return {fieldPath: f}; })};
+      if (shape.select) q.select = {fields: READS[collection].map(function (f) { return {fieldPath: f}; })};
       if (after) q.startAt = {values: [after], before: false};
       return fetch(url, {method: 'POST', headers: headers, body: JSON.stringify({structuredQuery: q})}).then(function (r) {
         if (r.ok) return r.json();
         return r.text().then(function (body) {
           var why = '';
           try { why = JSON.parse(body).error.message || ''; } catch (e) {}
-          var err = new Error("Kindroid wouldn't share the selfie list (" + r.status + (why ? ': ' + why.slice(0, 120) : '') + ')');
+          var err = new Error("Kindroid wouldn't share the " + (collection === 'Selfies' ? 'selfie' : 'video selfie') +
+            ' list (' + r.status + (why ? ': ' + why.slice(0, 120) : '') + ')');
           err.refused = r.status === 400 || r.status === 403;
           throw err;
         });
@@ -300,31 +309,44 @@
   }
 
   /** Kindroid's own resizer for pictures on its storage: a phone-sized copy, so even 1-second slides load fast. */
-  function lighter(url) {
+  function lighter(url, width) {
     var m = url.match(/^https:\/\/storage\.kindroid\.ai\/(?!cdn-cgi\/)(.+)$/);
     if (!m || /\.(gif|mp4|mov|webm|m4v)(\?|$)/i.test(m[1])) return url;
-    return 'https://storage.kindroid.ai/cdn-cgi/image/width=1080,fit=scale-down,format=auto/' + m[1];
+    return 'https://storage.kindroid.ai/cdn-cgi/image/width=' + (width || 1080) + ',fit=scale-down,format=auto/' + m[1];
   }
 
-  function toUrls(docs, uid) {
+  function openValue(v, uid) {
+    if (typeof v !== 'string' || !v) return Promise.resolve('');
+    return v.indexOf('!enc:') === 0 ? openEnc(v.substring(5), uid) : Promise.resolve(v);
+  }
+
+  /**
+   * What the slideshow shows: {kind: "photo" | "video", url, poster (videos' still), key (the
+   * picture's own address, for favorites), at (when it was made)}.
+   */
+  function toItems(docs, uid, kind) {
+    var fields = kind === 'video' ? READS.VideoSelfies : FIELDS;
     return Promise.all(docs.map(function (d) {
       var x = {};
-      FIELDS.forEach(function (f) { x[f] = value(d.fields && d.fields[f]); });
-      if (!shows(x)) return '';
-      var u = typeof x.url === 'string' && x.url ? x.url : x.thumbnail_url;
-      if (typeof u !== 'string' || !u) return '';
-      return (u.indexOf('!enc:') === 0 ? openEnc(u.substring(5), uid) : Promise.resolve(u)).then(function (open) {
-        return lighter(fullUrl(open));
+      fields.forEach(function (f) { x[f] = value(d.fields && d.fields[f]); });
+      if (!shows(x)) return null;
+      var main = kind === 'video' ? x.video_url : (x.url || x.thumbnail_url);
+      return Promise.all([openValue(main, uid), openValue(kind === 'video' ? x.image_url : '', uid)]).then(function (r) {
+        var url = fullUrl(r[0]);
+        if (!url) return null;
+        var at = typeof x.timestamp === 'number' && isFinite(x.timestamp) ? x.timestamp : 0;
+        return kind === 'video'
+          ? {kind: 'video', key: url, url: url, poster: r[1] ? lighter(fullUrl(r[1])) : '', at: at}
+          : {kind: 'photo', key: url, url: lighter(url), at: at};
       });
-    })).then(function (urls) {
+    })).then(function (items) {
       var seen = {};
-      return urls.filter(function (u) { if (!u || seen[u]) return false; seen[u] = 1; return true; });
+      return items.filter(function (it) { if (!it || seen[it.key]) return false; seen[it.key] = 1; return true; });
     });
   }
 
   function load(kin, cfg) {
-    var dir = direction(cfg), key = kin + '|' + dir;
-    var list = lists[key] || (lists[key] = {urls: [], at: 0, loading: false});
+    var list = lists[kin] || (lists[kin] = {photos: [], videos: [], at: 0, loading: false});
     if (list.loading) return;
     list.loading = true;
     readAuth().then(function (auth) {
@@ -342,36 +364,121 @@
           later.soon = true;
           throw later;
         }
-        return fetchSelfies(auth, pass.token, kin, dir);
-      }).then(function (docs) { return toUrls(docs, auth.uid); });
-    }).then(function (urls) {
-      list.urls = urls;
+        var photos = fetchSelfies(auth, pass.token, kin, 'Selfies').then(function (docs) { return toItems(docs, auth.uid, 'photo'); });
+        // Videos are extra: if they can't be read, the photos still show.
+        var videos = fetchSelfies(auth, pass.token, kin, 'VideoSelfies').then(function (docs) {
+          list.videoProblem = '';
+          return toItems(docs, auth.uid, 'video');
+        }, function (e) {
+          list.videoProblem = String((e && e.message) || e);
+          return list.videos;
+        });
+        return Promise.all([photos, videos]);
+      });
+    }).then(function (both) {
+      list.photos = both[0];
+      list.videos = both[1];
       list.problem = '';
       list.soon = false;
       list.at = Date.now();
       list.loading = false;
-      tell(kin, cfg);
+      tell(kin, config());
     }, function (e) {
       list.loading = false;
       list.problem = String((e && e.message) || e);
       list.soon = !!(e && e.soon);
       // A turned-down question isn't asked again for a while; a login being renewed soon is.
       list.at = Date.now() - REFRESH_MS + (e && e.soon ? RETRY_MS : FAILED_WAIT_MS);
-      tell(kin, cfg);
+      tell(kin, config());
     });
   }
 
+  // ---- My pictures (picked from the phone; the app serves them at /__kindroidplus/mine/…) ----
+
+  var mineCache = {gen: -1, items: []};
+
+  function mine(cfg) {
+    var gen = cfg && cfg.mineGen != null ? cfg.mineGen : mineCache.gen;
+    if (gen !== mineCache.gen) {
+      mineCache.gen = gen;
+      try {
+        mineCache.items = JSON.parse(bridge.myPictures() || '[]').map(function (m) {
+          return {kind: 'photo', key: m.url, url: m.url, at: m.at || 0, mine: true};
+        });
+      } catch (e) {
+        mineCache.items = [];
+      }
+    }
+    return mineCache.items;
+  }
+
+  // ---- Favorites: starred pictures, kept per Kin in localStorage ----
+
+  var favVersion = 0;
+
+  function favs(kin) {
+    try { return JSON.parse(localStorage.getItem('kp-favs:' + kin) || '{}') || {}; } catch (e) { return {}; }
+  }
+
+  function toggleFav(kin, key) {
+    var f = favs(kin);
+    if (f[key]) delete f[key]; else f[key] = 1;
+    try { localStorage.setItem('kp-favs:' + kin, JSON.stringify(f)); } catch (e) {}
+    favVersion++;
+    return !!f[key];
+  }
+
+  /** Everything this Kin's slideshow could show, newest first (before the settings pick from it). */
+  function everything(kin, cfg) {
+    var list = lists[kin] || {photos: [], videos: []};
+    var photos = list.photos.length ? list.photos : gathered(kin).map(function (u, i) {
+      return {kind: 'photo', key: u, url: u, at: -i};
+    });
+    return {photos: photos, videos: list.videos, mine: mine(cfg)};
+  }
+
+  var itemsCache = {sig: '', items: []};
+
+  /** What the slideshow shows now: the chosen kinds, in the chosen order, maybe favorites only. */
+  function itemsFor(kin, cfg) {
+    var list = lists[kin] || {at: 0};
+    var sig = [kin, list.at, gatheredCache.at, mineCache.gen, favVersion, cfg.order, cfg.photos, cfg.videos, cfg.mine, cfg.favorites].join('|');
+    if (sig === itemsCache.sig) return itemsCache.items;
+    var all = everything(kin, cfg), out = [];
+    if (cfg.photos !== false) out = out.concat(all.photos);
+    if (cfg.videos !== false) out = out.concat(all.videos);
+    if (cfg.mine) out = out.concat(all.mine);
+    out.sort(function (a, b) { return (b.at || 0) - (a.at || 0); });
+    if (cfg.order === 'oldest') out.reverse();
+    state.noFavs = false;
+    if (cfg.favorites) {
+      var f = favs(kin), only = out.filter(function (it) { return f[it.key]; });
+      if (only.length) out = only; else state.noFavs = true;
+    }
+    itemsCache = {sig: sig, items: out};
+    return out;
+  }
+
   /**
-   * Tells the app how many selfies there are and where from, or what went wrong.
-   * needGallery asks the app to look through the gallery by itself (the list couldn't be read).
+   * Tells the app what there is and where it came from, or what went wrong.
+   * needGallery asks the app to look through the gallery by itself (the photo list couldn't be read).
    */
   function tell(kin, cfg) {
-    var list = lists[kin + '|' + direction(cfg)] || {urls: []};
-    var picked = gathered(kin);
-    if (list.urls.length) report({kin: kin, count: list.urls.length, from: 'list'});
-    else if (list.problem && list.soon) report({kin: kin, count: picked.length, from: 'gallery', waiting: list.problem});
-    else if (list.problem) report({kin: kin, count: picked.length, from: 'gallery', listProblem: list.problem, needGallery: true});
-    else if (list.at) report({kin: kin, count: 0, from: 'list', problem: 'This Kin has no selfies yet'});
+    var list = lists[kin] || {photos: [], videos: []};
+    var all = everything(kin, cfg);
+    var o = {
+      kin: kin, count: itemsFor(kin, cfg).length, photos: all.photos.length, videos: all.videos.length,
+      mine: all.mine.length, favorites: Object.keys(favs(kin)).length, noFavs: !!state.noFavs,
+      from: list.photos.length || !list.problem ? 'list' : 'gallery'
+    };
+    if (list.problem && list.soon) o.waiting = list.problem;
+    else if (list.problem) {
+      o.listProblem = list.problem;
+      o.needGallery = cfg.photos !== false;
+    }
+    if (list.videoProblem) o.videoProblem = list.videoProblem;
+    if (!o.count && list.at && !list.problem) o.problem = 'Nothing to show yet: no selfies' + (cfg.mine ? ' or pictures' : '');
+    report(o);
   }
 
   // ---- Backup: selfies picked up from Kindroid's own gallery when it's open ----
@@ -380,13 +487,17 @@
     return 'kp-selfies:' + kin;
   }
 
+  /** Read from localStorage at most every few seconds (the hidden gallery page writes it too). */
+  var gatheredCache = {kin: null, list: [], read: 0, at: 0};
+
   function gathered(kin) {
-    try {
-      var v = JSON.parse(localStorage.getItem(gatheredKey(kin)) || '[]');
-      return Array.isArray(v) ? v : [];
-    } catch (e) {
-      return [];
-    }
+    if (gatheredCache.kin === kin && Date.now() - gatheredCache.read < 5000) return gatheredCache.list;
+    var v = [];
+    try { v = JSON.parse(localStorage.getItem(gatheredKey(kin)) || '[]'); } catch (e) {}
+    if (!Array.isArray(v)) v = [];
+    if (gatheredCache.kin !== kin || v.length !== gatheredCache.list.length || v[0] !== gatheredCache.list[0]) gatheredCache.at = Date.now();
+    gatheredCache = {kin: kin, list: v, read: Date.now(), at: gatheredCache.at};
+    return v;
   }
 
   /** The picture's own address (Next.js's resized copies point at it). */
@@ -446,6 +557,7 @@
     merged = merged.slice(0, MOST);
     if (merged.length === kept.length && merged.every(function (u, i) { return u === kept[i]; })) return urls;
     try { localStorage.setItem(gatheredKey(kin), JSON.stringify(merged)); } catch (e) {}
+    gatheredCache = {kin: kin, list: merged, read: Date.now(), at: Date.now()};
     if (MODE === 'show') tell(kin, config());
     return urls;
   }
@@ -541,7 +653,7 @@
     // Kindroid drew its page again and took ours away: put the last picture straight back.
     if (state.shown) {
       layers[0].style.transition = 'none';
-      layers[0].style.backgroundImage = css(state.shown);
+      paint(layers[0], state.shown, state.shown.kind === 'video' ? makeVideo(state.shown.url) : null);
       layers[0].style.opacity = '1';
       void layers[0].offsetWidth;
       layers[0].style.transition = 'opacity ' + FADE_MS + 'ms ease';
@@ -567,45 +679,208 @@
     return a;
   }
 
-  function nextUrl(urls, cfg) {
+  function nextItem(items, cfg) {
     if (cfg.order === 'random') {
       if (!state.bag.length) {
-        state.bag = shuffle(urls.slice());
-        if (state.bag.length > 1 && state.bag[0] === state.shown) state.bag.push(state.bag.shift());
+        state.bag = shuffle(items.slice());
+        if (state.bag.length > 1 && state.shown && state.bag[0].key === state.shown.key) state.bag.push(state.bag.shift());
       }
       return state.bag.shift();
     }
-    state.pos = (state.pos + 1) % urls.length;
-    return urls[state.pos];
+    state.pos = (state.pos + 1) % items.length;
+    return items[state.pos];
   }
 
-  function show(url, cfg, kin) {
+  /** A muted video that plays round and round, filling the screen like the pictures do. */
+  function makeVideo(url) {
+    var v = document.createElement('video');
+    v.muted = true;
+    v.defaultMuted = true;
+    v.loop = true;
+    v.playsInline = true;
+    v.autoplay = true;
+    v.preload = 'auto';
+    v.setAttribute('muted', '');
+    v.setAttribute('playsinline', '');
+    v.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:50% 30%;';
+    v.src = url;
+    return v;
+  }
+
+  function dispose(v) {
+    try { v.pause(); v.removeAttribute('src'); v.load(); } catch (e) {}
+    if (v.parentNode) v.parentNode.removeChild(v);
+  }
+
+  /** Stops and takes out a layer's video, if it has one. */
+  function clearLayer(layer) {
+    Array.prototype.slice.call(layer.querySelectorAll('video')).forEach(dispose);
+  }
+
+  function paint(layer, item, video) {
+    clearLayer(layer);
+    if (item.kind === 'video') {
+      layer.style.backgroundImage = item.poster ? css(item.poster) : '';
+      if (video) {
+        layer.appendChild(video);
+        var p = video.play();
+        if (p && p.catch) p.catch(function () {});
+      }
+    } else {
+      layer.style.backgroundImage = css(item.url);
+    }
+  }
+
+  /** Loads [item] first (a picture, or enough of a video to play), then fades it in. */
+  function show(item, cfg, kin) {
     state.busy = true;
-    var img = new Image();
-    img.onload = function () {
+    var done = function (ok, video) {
       state.busy = false;
+      if (!ok) {
+        state.failed++;
+        state.nextAt = Date.now() + (state.failed > 20 ? 30000 : 0);
+        if (state.failed === 20) report({kin: kin, count: 0, problem: "The selfies didn't load"});
+        return;
+      }
       state.failed = 0;
-      if (state.kin !== kin || !ensureLayers()) return;
+      if (state.kin !== kin || !ensureLayers()) {
+        if (video) dispose(video);
+        return;
+      }
       var incoming = layers[1 - front], old = layers[front], fade = fadeMs(cfg);
       incoming.style.transition = old.style.transition = 'opacity ' + fade + 'ms ease';
       incoming.style.zIndex = '2';
       old.style.zIndex = '1';
-      incoming.style.backgroundImage = css(url);
+      paint(incoming, item, video);
       incoming.style.opacity = '1';
       front = 1 - front;
       // The old one goes once the new one covers it, so Kindroid's own never peeks through.
-      setTimeout(function () { if (layers[front] !== old) old.style.opacity = '0'; }, fade);
-      state.shown = url;
-      state.nextAt = Date.now() + slideMs(cfg);
+      setTimeout(function () {
+        if (layers[front] !== old) {
+          old.style.opacity = '0';
+          clearLayer(old);
+        }
+      }, fade);
+      state.shown = item;
+      // A video plays all the way through at least once (up to a minute), even on fast slideshows.
+      var length = video && isFinite(video.duration) ? video.duration * 1000 : 0;
+      state.nextAt = Date.now() + Math.max(slideMs(cfg), Math.min(60000, length));
     };
-    img.onerror = function () {
-      state.busy = false;
-      state.failed++;
-      state.nextAt = Date.now() + (state.failed > 20 ? 30000 : 0);
-      if (state.failed === 20) report({kin: kin, count: 0, problem: "The selfie pictures didn't load"});
-    };
-    img.src = url;
+    if (item.kind === 'video') {
+      var v = makeVideo(item.url), settled = false, timer = 0;
+      var finish = function (ok) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (!ok) dispose(v);
+        done(ok, ok ? v : null);
+      };
+      timer = setTimeout(function () { finish(false); }, 15000);
+      v.addEventListener('canplay', function () { finish(true); });
+      v.addEventListener('error', function () { finish(false); });
+      v.load();
+    } else {
+      var img = new Image();
+      img.onload = function () { done(true); };
+      img.onerror = function () { done(false); };
+      img.src = item.url;
+    }
   }
+
+  // ---- ⭐ Favorites screen: every selfie (and picture) of this Kin; tap to star ----
+
+  function closeFavorites() {
+    var o = document.getElementById('kp-favorites');
+    if (o) o.parentNode.removeChild(o);
+  }
+
+  window.__kpOpenFavorites = function () {
+    var kin = kinId();
+    if (!kin) return false;
+    closeFavorites();
+    var cfg = config(), all = everything(kin, cfg);
+    var items = all.photos.concat(all.videos, all.mine).sort(function (a, b) { return (b.at || 0) - (a.at || 0); });
+    var starred = favs(kin);
+    var o = document.createElement('div');
+    o.id = 'kp-favorites';
+    o.setAttribute('role', 'dialog');
+    o.setAttribute('aria-modal', 'true');
+    o.setAttribute('aria-label', 'Favorites');
+    o.style.cssText = 'position:fixed;inset:0;z-index:2147482000;pointer-events:auto;overflow-y:auto;' +
+      'background:rgba(14,11,16,.97);color:#fff;font:15px system-ui,sans-serif;';
+    var head = document.createElement('div');
+    head.style.cssText = 'position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:10px;padding:14px 14px 10px;background:rgba(14,11,16,.97);';
+    var title = document.createElement('div');
+    title.style.cssText = 'flex:1;font-weight:600;';
+    var count = function () {
+      var n = Object.keys(starred).length;
+      title.textContent = '⭐ Tap to star · ' + n + ' starred';
+    };
+    count();
+    var doneButton = document.createElement('button');
+    doneButton.textContent = 'Done';
+    doneButton.style.cssText = 'padding:8px 18px;border-radius:999px;border:1px solid rgba(255,111,165,.7);background:transparent;color:#fff;font:600 14px system-ui,sans-serif;';
+    doneButton.addEventListener('click', closeFavorites);
+    head.appendChild(title);
+    head.appendChild(doneButton);
+    o.appendChild(head);
+    var grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:4px;';
+    if (!items.length) {
+      var none = document.createElement('div');
+      none.textContent = 'No selfies found yet.';
+      none.style.cssText = 'padding:30px;text-align:center;opacity:.7;grid-column:1/-1;';
+      grid.appendChild(none);
+    }
+    items.forEach(function (it) {
+      var cell = document.createElement('div');
+      cell.style.cssText = 'position:relative;aspect-ratio:3/4;background:#222;border-radius:6px;overflow:hidden;';
+      var img = document.createElement('img');
+      img.loading = 'lazy';
+      img.src = (it.kind === 'video' ? it.poster : it.url).replace('/cdn-cgi/image/width=1080,', '/cdn-cgi/image/width=300,');
+      img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
+      cell.appendChild(img);
+      if (it.kind === 'video' || it.mine) {
+        var tag = document.createElement('div');
+        tag.textContent = it.kind === 'video' ? '▶' : '📱';
+        tag.style.cssText = 'position:absolute;left:6px;bottom:6px;font-size:14px;text-shadow:0 1px 3px #000;';
+        cell.appendChild(tag);
+      }
+      var star = document.createElement('div');
+      star.style.cssText = 'position:absolute;right:6px;top:4px;font-size:22px;text-shadow:0 1px 4px #000;';
+      var paintStar = function () {
+        star.textContent = starred[it.key] ? '⭐' : '☆';
+        cell.style.outline = starred[it.key] ? '3px solid #ffc83d' : 'none';
+        cell.style.outlineOffset = '-3px';
+      };
+      paintStar();
+      cell.appendChild(star);
+      cell.addEventListener('click', function () {
+        if (toggleFav(kin, it.key)) starred[it.key] = 1; else delete starred[it.key];
+        paintStar();
+        count();
+      });
+      grid.appendChild(cell);
+    });
+    o.appendChild(grid);
+    // Back (Escape) closes it, like Kindroid's own sheets.
+    var esc = function (e) {
+      if (e.key === 'Escape' && document.getElementById('kp-favorites') === o) {
+        closeFavorites();
+        document.removeEventListener('keydown', esc, true);
+      }
+    };
+    document.addEventListener('keydown', esc, true);
+    document.body.appendChild(o);
+    return true;
+  };
+
+  /** Stars (or unstars) the one showing now. Gives "on", "off" or "none". */
+  window.__kpStarCurrent = function () {
+    var kin = kinId();
+    if (!kin || !state.shown) return 'none';
+    return toggleFav(kin, state.shown.key) ? 'on' : 'off';
+  };
 
   // ---- See-through message boxes ----
   // Kindroid's bubbles are always solid (its "Immersive" preset only brightens the background
@@ -647,72 +922,180 @@
     if (el.textContent !== css) el.textContent = css;
   }
 
-  // ---- ✨ Ideas button on Kindroid's scene setting box ----
-  // The box (from kindroid.ai's code): a textarea with maxlength 160 and the placeholder
-  // "location, attire, activity, time, etc." in the "Set the scene" sheet, or the
-  // "Suggested scene" one (…_suggestion-input). It's React's, so the button isn't put inside
-  // React's own elements: it floats over the box's corner from the end of the page.
+  // ---- ✨ Idea buttons on Kindroid's text boxes ----
+  // From kindroid.ai's code: every box is a React-controlled <textarea> (so text goes in with
+  // the native value setter + an "input" event), and nothing saves until the owner taps
+  // Kindroid's own Save. The buttons float over the boxes from the end of the page, never
+  // inside React's own elements.
+  // - The scene: the "Set the scene" sheet's textarea (maxlength 160, "location, attire…"),
+  //   its "Suggested scene" one, or #kin-scene-v2 in the Kin's settings.
+  // - The Kin's settings ("Personality" tab): textareas with these ids; the limit is the
+  //   box's own maxlength (it's bigger for subscribers).
+  // - The chat's message box (aria-label "Message"): ideas for what to say.
+  var FIELDS_BY_ID = {
+    'kin-backstory-v2': ['Personality', "who your Kin is: personality, backstory, how they talk and act, and your relationship, written about them by name"],
+    'kin-memory-v2': ['Key Memories', 'the most important things your Kin should always remember about you and your time together, as short facts'],
+    'kin-developed-self-v2': ['Growth & relationship', 'how your Kin has changed and how your relationship has grown'],
+    'kin-durable-facts-v2': ['Important facts', 'stable facts about you, your Kin and your lives that stay true'],
+    'kin-ongoing-context-v2': ['Ongoing threads', 'current plans, promises and things in progress between you'],
+    'kin-directive-v2': ['Response Directive', "a short instruction for your Kin's style of replying"],
+    'kin-example-message-v2': ['Example Message', 'one example message written exactly in your Kin\'s own voice and style'],
+    'kin-additional-context-v2': ['Additional Context', 'extra context: world details, places, people, rules of the story'],
+    'kin-call-directive-v2': ['Call Directive', 'how your Kin should behave on voice calls'],
+    'kin-away-directive-v2': ['Away Directive', 'how your Kin should behave when reaching out on their own']
+  };
 
-  function sceneBoxes() {
+  function isSceneBox(t) {
+    var hint = (t.getAttribute('placeholder') || '').toLowerCase();
+    return t.id === 'kin-scene-v2' || t.getAttribute('maxlength') === '160' || /attire/.test(hint) ||
+      /_suggestion-input/.test(String(t.className));
+  }
+
+  function isMessageBox(t) {
+    return t.getAttribute('aria-label') === 'Message' ||
+      (/_input\b/.test(String(t.className)) && /message/i.test(t.getAttribute('placeholder') || ''));
+  }
+
+  /** What kind of box this is: "scene", "field" (a Kin setting), "reply" (the message box) or null. */
+  function boxKind(t) {
+    if (isSceneBox(t)) return 'scene';
+    if (FIELDS_BY_ID[t.id]) return 'field';
+    if (isMessageBox(t)) return 'reply';
+    return null;
+  }
+
+  function visibleBoxes(kind) {
     return Array.prototype.filter.call(document.querySelectorAll('textarea'), function (t) {
-      var hint = (t.getAttribute('placeholder') || '').toLowerCase();
-      var scene = t.getAttribute('maxlength') === '160' || /attire/.test(hint) || /_suggestion-input/.test(String(t.className));
-      return scene && t.offsetWidth > 0 && t.offsetHeight > 0;
+      return t.offsetWidth > 0 && t.offsetHeight > 0 && (!kind || boxKind(t) === kind);
     });
   }
 
-  /** What the AI gets to fit the idea to the chat: the Kin's name, the box's text, the last few messages. */
-  function sceneContext(box) {
-    var name = '';
-    var names = document.querySelectorAll('[class*="_name"]');
-    for (var i = 0; i < names.length && !name; i++) {
-      var r = names[i].getBoundingClientRect(), t = (names[i].textContent || '').trim();
-      if (r.top < innerHeight * 0.25 && r.width > 0 && t && t.length <= 40) name = t;
-    }
-    var bubbles = Array.prototype.filter.call(
-      document.querySelectorAll('[class*="_bubble-self"], [class*="_bubble-other"]'),
-      function (b) { return !/_bubble-(bare|wrap)/.test(String(b.className)); }).slice(-6);
-    var recent = bubbles.map(function (b) {
-      var text = (b.innerText || b.textContent || '').replace(/\u2026|\.\.\.|▷|\b\d{1,2}:\d{2}\b/g, ' ').replace(/\s+/g, ' ').trim();
-      return {mine: /_bubble-self/.test(String(b.className)), text: text.slice(0, 300)};
-    }).filter(function (m) { return m.text; });
-    return {name: name, current: box ? box.value : '', recent: recent};
+  function sceneBoxes() {
+    return visibleBoxes('scene');
   }
 
-  function showIdeasButton() {
-    var boxes = sceneBoxes(), box = boxes[boxes.length - 1];
-    var button = document.getElementById('kp-ideas');
-    if (!box) {
-      if (button) button.style.display = 'none';
-      return;
+  function kinName() {
+    var names = document.querySelectorAll('[class*="_name"]');
+    for (var i = 0; i < names.length; i++) {
+      var r = names[i].getBoundingClientRect(), t = (names[i].textContent || '').trim();
+      if (r.top < innerHeight * 0.25 && r.width > 0 && t && t.length <= 40) return t;
     }
-    if (!button) {
-      button = document.createElement('button');
-      button.id = 'kp-ideas';
-      button.type = 'button';
-      button.textContent = '✨ Ideas';
-      // pointer-events:auto: a sheet that's open may turn taps off on the rest of the page.
-      button.style.cssText = 'position:fixed;z-index:2147483000;pointer-events:auto;padding:6px 12px;border-radius:999px;' +
-        'border:1px solid rgba(255,111,165,.7);background:rgba(40,20,32,.92);color:#fff;font:600 13px system-ui,sans-serif;' +
-        'box-shadow:0 2px 8px rgba(0,0,0,.4);';
-      // The sheet mustn't take a tap on the button as a tap outside it (which would close it).
-      ['pointerdown', 'mousedown', 'touchstart'].forEach(function (kind) {
-        button.addEventListener(kind, function (e) { e.stopPropagation(); }, true);
-      });
-      button.addEventListener('click', function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        var target = sceneBoxes().pop() || null;
-        window.__kpSceneTarget = target;
-        try { bridge.ideas(JSON.stringify(sceneContext(target))); } catch (err) {}
-      }, true);
-      document.body.appendChild(button);
-    }
-    var r = box.getBoundingClientRect();
-    button.style.display = '';
-    button.style.top = Math.max(0, r.bottom - 38) + 'px';
-    button.style.left = Math.max(0, r.right - 98) + 'px';
+    return '';
   }
+
+  function recentMessages(n) {
+    var bubbles = Array.prototype.filter.call(
+      document.querySelectorAll('[class*="_bubble-self"], [class*="_bubble-other"]'),
+      function (b) { return !/_bubble-(bare|wrap)/.test(String(b.className)); }).slice(-n);
+    return bubbles.map(function (b) {
+      var text = (b.innerText || b.textContent || '').replace(/…|\.\.\.|▷|\b\d{1,2}:\d{2}\b/g, ' ').replace(/\s+/g, ' ').trim();
+      return {mine: /_bubble-self/.test(String(b.className)), text: text.slice(0, 300)};
+    }).filter(function (m) { return m.text; });
+  }
+
+  /** What the AI gets to fit its idea: the box, the Kin's name, the last messages, the Kin's other settings. */
+  function ideaContext(box, kind) {
+    var c = {kind: kind, name: kinName(), current: box ? box.value : '', recent: recentMessages(kind === 'reply' ? 10 : 6)};
+    if (kind === 'field' && box) {
+      var f = FIELDS_BY_ID[box.id];
+      c.field = {id: box.id, label: f[0], guide: f[1], limit: Number(box.getAttribute('maxlength')) || 1000,
+        example: box.getAttribute('placeholder') || ''};
+      c.others = {};
+      Object.keys(FIELDS_BY_ID).forEach(function (id) {
+        var other = document.getElementById(id);
+        if (other && other !== box && other.value && other.value.trim()) c.others[FIELDS_BY_ID[id][0]] = other.value.trim().slice(0, 1200);
+      });
+    }
+    if (kind === 'scene') c.limit = Number(box && box.getAttribute('maxlength')) || 160;
+    return c;
+  }
+
+  var ideaPool = [];  // {box, button}
+
+  function ideaButton(kind) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('data-kp-ideas', kind);
+    if (kind === 'scene') b.id = 'kp-ideas';
+    b.textContent = kind === 'reply' ? '💬 What to say?' : '✨ Ideas';
+    // pointer-events:auto: a sheet that's open may turn taps off on the rest of the page.
+    b.style.cssText = 'position:fixed;z-index:2147483000;pointer-events:auto;padding:6px 12px;border-radius:999px;' +
+      'border:1px solid rgba(255,111,165,.7);background:rgba(40,20,32,.92);color:#fff;font:600 13px system-ui,sans-serif;' +
+      'box-shadow:0 2px 8px rgba(0,0,0,.4);white-space:nowrap;';
+    // The sheet mustn't take a tap on the button as a tap outside it (which would close it).
+    ['pointerdown', 'mousedown', 'touchstart'].forEach(function (k) {
+      b.addEventListener(k, function (e) { e.stopPropagation(); }, true);
+    });
+    return b;
+  }
+
+  /** One button per visible box: on the box's bottom-right corner, or above the message box. */
+  function showIdeasButtons() {
+    var boxes = visibleBoxes(null).filter(function (t) { return boxKind(t); });
+    // A box that's under an open sheet (the message box behind the scene sheet) gets none.
+    var sheet = sheetOpen();
+    if (sheet) boxes = boxes.filter(function (t) { return sheet.contains(t); });
+    var keep = [];
+    boxes.forEach(function (box) {
+      var kind = boxKind(box), entry = null;
+      for (var i = 0; i < ideaPool.length; i++) if (ideaPool[i].box === box) entry = ideaPool[i];
+      if (!entry) {
+        var button = ideaButton(kind);
+        entry = {box: box, button: button};
+        button.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          window.__kpTarget = box;
+          try { bridge.ideas(JSON.stringify(ideaContext(box, kind))); } catch (err) {}
+        }, true);
+        document.body.appendChild(button);
+      }
+      var r = box.getBoundingClientRect(), b = entry.button;
+      b.style.display = '';
+      if (kind === 'reply') {
+        b.style.top = Math.max(0, r.top - 40) + 'px';
+        b.style.left = Math.max(4, r.right - (b.offsetWidth || 130)) + 'px';
+      } else {
+        b.style.top = Math.max(0, r.bottom - 38) + 'px';
+        b.style.left = Math.max(0, r.right - (b.offsetWidth || 90) - 8) + 'px';
+      }
+      keep.push(entry);
+    });
+    ideaPool.forEach(function (entry) {
+      if (keep.indexOf(entry) < 0 && entry.button.parentNode) entry.button.parentNode.removeChild(entry.button);
+    });
+    ideaPool = keep;
+  }
+
+  /** Puts [text] in a box the way typing would (React only hears an "input" event). */
+  function putIn(t, text) {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(t, String(text));
+    t.dispatchEvent(new Event('input', {bubbles: true}));
+    t.focus();
+    return true;
+  }
+
+  /** Puts [text] in the box whose button was tapped ([kind] says which kind of box to look for if it's gone). */
+  window.__kpPut = function (text, kind) {
+    var t = window.__kpTarget;
+    if (!t || !t.isConnected || !t.offsetWidth || (kind && boxKind(t) !== kind)) t = visibleBoxes(kind || 'scene').pop();
+    return t ? putIn(t, text) : false;
+  };
+
+  window.__kpSetScene = function (text) {
+    return window.__kpPut(text, 'scene');
+  };
+
+  /** For the app's menu: the context for [kind] ideas from what's on the page. */
+  window.__kpContext = function (kind) {
+    var box = visibleBoxes(kind).pop() || null;
+    if (box) window.__kpTarget = box;
+    return JSON.stringify(ideaContext(box, kind));
+  };
+
+  window.__kpSceneContext = function () {
+    return window.__kpContext('scene');
+  };
 
   // ---- Kindroid's sheets (gallery, scene, settings): the app hides its 🖼 button while one is
   // open, and the phone's back button closes the sheet instead of leaving the chat. ----
@@ -752,21 +1135,6 @@
     return true;
   };
 
-  /** Puts [text] in the scene box the way typing would (React only hears an "input" event). */
-  window.__kpSetScene = function (text) {
-    var t = window.__kpSceneTarget;
-    if (!t || !t.isConnected || !t.offsetWidth) t = sceneBoxes().pop();
-    if (!t) return false;
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(t, String(text));
-    t.dispatchEvent(new Event('input', {bubbles: true}));
-    t.focus();
-    return true;
-  };
-
-  window.__kpSceneContext = function () {
-    return JSON.stringify(sceneContext(sceneBoxes().pop() || null));
-  };
-
   function slideMs(cfg) {
     return Math.max(1, Number(cfg.seconds) || 10) * 1000;
   }
@@ -787,7 +1155,7 @@
     if (document.visibilityState === 'hidden') return;
     var cfg = config(), key = JSON.stringify(cfg);
     styleBubbles(cfg.bubbles);
-    showIdeasButton();
+    showIdeasButtons();
     tellSheet();
     if (key !== state.cfg) {
       state.cfg = key;
@@ -797,6 +1165,7 @@
     if (kin !== state.kin) {
       state.kin = kin;
       state.shown = null;
+      state.items = null;
       drop();
       restart();
     }
@@ -805,22 +1174,22 @@
       state.gatheredAt = Date.now();
       gather(kin);
     }
-    var list = lists[kin + '|' + direction(cfg)];
+    var list = lists[kin];
     if (!list || (!list.loading && Date.now() - list.at > REFRESH_MS)) load(kin, cfg);
-    var urls = list && list.urls.length ? list.urls : gathered(kin);
-    if (!list || !list.urls.length) {
-      if (direction(cfg) === 'asc') urls = urls.slice().reverse();
-      if (state.from !== 'gallery') { state.from = 'gallery'; restart(); }
-    } else if (state.from !== 'list') {
-      state.from = 'list';
-      restart();
+    var items = itemsFor(kin, cfg);
+    if (items !== state.items) {
+      // What's on offer changed (new selfies, other settings): go round again from the start.
+      var first = !state.items;
+      state.items = items;
+      if (!first) restart();
+      tell(kin, cfg);
     }
-    if (!urls.length) return;
+    if (!items.length) return;
     if (!ensureLayers()) return;
     matchKindroid();
     if (!state.busy && Date.now() >= state.nextAt) {
-      var url = nextUrl(urls, cfg);
-      if (url) show(url, cfg, kin);
+      var item = nextItem(items, cfg);
+      if (item) show(item, cfg, kin);
     }
   }
 

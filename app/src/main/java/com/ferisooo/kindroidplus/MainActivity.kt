@@ -13,7 +13,10 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.os.SystemClock
 import android.webkit.CookieManager
+import android.webkit.WebResourceResponse
+import android.webkit.WebStorage
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -44,6 +47,18 @@ class MainActivity : Activity() {
     /** The selfie slideshow behind the chat, and its 🖼 button. */
     private lateinit var slides: Slides
 
+    /** The app lock (PIN, pattern or password), if one is set. */
+    private lateinit var lock: Lock
+
+    /** The owner's own pictures for the slideshow. */
+    private lateinit var myPictures: MyPictures
+
+    /** True while the app itself sent you to another screen (a picker): coming back doesn't lock. */
+    private var awayForPicker = false
+
+    /** When the app went out of sight (0: hasn't). */
+    private var leftAt = 0L
+
     /** A sign-in window a page opened ("Sign in with Apple" and the like), shown over Kindroid. */
     private var popup: WebView? = null
 
@@ -55,7 +70,9 @@ class MainActivity : Activity() {
         root = FrameLayout(this).apply { setBackgroundColor(BACKGROUND) }
         // Nobody with a cable can look inside the logged-in page (phones for app makers still allow it).
         WebView.setWebContentsDebuggingEnabled(false)
-        slides = Slides(this, root)
+        myPictures = MyPictures(this) { intent, code -> launchForResult(intent, code) }
+        lock = Lock(this, root) { startOver() }
+        slides = Slides(this, root, myPictures, lock)
 
         web = newPage()
         root.addView(web, 0, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -99,6 +116,8 @@ class MainActivity : Activity() {
 
         setContentView(root)
         keepClearOfSystemBars()
+        // Locked from the start (the page loads behind the lock meanwhile).
+        lock.lockNow()
         // Back where you were last time (the chat you had open), not the start page.
         web.loadUrl(lastPage() ?: HOME)
     }
@@ -207,6 +226,13 @@ class MainActivity : Activity() {
             return true
         }
 
+        // My pictures for the slideshow: the app answers /__kindroidplus/mine/… itself.
+        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+            val url = request.url
+            if (url.scheme != "https" || !isKindroid(url.host)) return null
+            return myPictures.serve(url.path ?: "")
+        }
+
         private fun tidy(view: WebView, url: String) {
             if (!isKindroid(Uri.parse(url).host)) return
             view.evaluateJavascript(TIDY_JS, null)
@@ -231,6 +257,8 @@ class MainActivity : Activity() {
         }
 
         override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message): Boolean {
+            // Nothing opens over the lock.
+            if (lock.isShowing) return false
             closePopup()
             val window = WebView(this@MainActivity)
             setUp(window)
@@ -257,7 +285,7 @@ class MainActivity : Activity() {
             filesWanted?.onReceiveValue(null)
             filesWanted = callback
             return try {
-                startActivityForResult(params.createIntent(), PICK_FILES)
+                launchForResult(params.createIntent(), PICK_FILES)
                 true
             } catch (e: ActivityNotFoundException) {
                 filesWanted = null
@@ -319,6 +347,7 @@ class MainActivity : Activity() {
     // Still called: the manifest turns off Android 16's new back handling.
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
+        if (lock.onBack()) return
         val window = popup
         when {
             window != null && window.canGoBack() -> window.goBack()
@@ -333,6 +362,10 @@ class MainActivity : Activity() {
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == MyPictures.PICK) {
+            myPictures.picked(resultCode, data)
+            return
+        }
         if (requestCode != PICK_FILES) {
             super.onActivityResult(requestCode, resultCode, data)
             return
@@ -347,6 +380,48 @@ class MainActivity : Activity() {
             WebChromeClient.FileChooserParams.parseResult(resultCode, data)
         }
         callback.onReceiveValue(picked)
+    }
+
+    /** Opens another app's screen for an answer (a picker); coming back from it doesn't lock. */
+    @Suppress("DEPRECATION")
+    private fun launchForResult(intent: Intent, code: Int) {
+        startActivityForResult(intent, code)
+        awayForPicker = true
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Back after being away: locks if it was away long enough (not after the app's own pickers).
+        val away = SystemClock.elapsedRealtime() - leftAt
+        if (leftAt > 0 && !awayForPicker && away >= lock.graceMs) lock.lockNow()
+        awayForPicker = false
+    }
+
+    override fun onStop() {
+        leftAt = SystemClock.elapsedRealtime()
+        // Locked straight away (so the chat never shows when you come back), unless it waits a while.
+        if (!awayForPicker && lock.graceMs == 0L) lock.lockNow()
+        super.onStop()
+    }
+
+    /**
+     * "Forgot?" on the lock: Kindroid+ forgets everything on this phone (the Kindroid login, the
+     * lock, AI keys, my pictures, settings) and opens fresh. The Kindroid account is untouched.
+     */
+    private fun startOver() {
+        web.evaluateJavascript(
+            "try{localStorage.clear();sessionStorage.clear();indexedDB.databases&&indexedDB.databases().then(function(l){" +
+                "l.forEach(function(d){indexedDB.deleteDatabase(d.name)})})}catch(e){}", null,
+        )
+        CookieManager.getInstance().removeAllCookies(null)
+        CookieManager.getInstance().flush()
+        WebStorage.getInstance().deleteAllData()
+        web.clearCache(true)
+        web.clearHistory()
+        listOf("app", "slides", "ai", "lock").forEach { getSharedPreferences(it, MODE_PRIVATE).edit().clear().commit() }
+        java.io.File(filesDir, "mine").deleteRecursively()
+        Toast.makeText(this, "Starting over… log in to Kindroid again 💕", Toast.LENGTH_LONG).show()
+        root.postDelayed({ recreate() }, 800)
     }
 
     override fun onResume() {

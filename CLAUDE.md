@@ -8,11 +8,11 @@ chat background (the selfie slideshow).
   code. Same setup as the owner's `ferisooo/Android-File-Hider`.
 - minSdk 26, compile/target SDK 36, AGP 8.11.1, Kotlin 2.2.20, Gradle 8.14.3.
 - Package `com.ferisooo.kindroidplus`. `MainActivity.kt` (the WebView, sign-in
-  pop-ups, uploads, offline note, fast reopen, singleTask), `Slides.kt` (the 🖼
-  button and "Kindroid+ 💕" pop-up: three drop-downs Order / Speed / Boxes,
-  status, scene ideas; the page bridge; the hidden gallery pass), `Ai.kt` and
-  `SceneIdeas.kt` (✨ scene ideas with the owner's own AI key), and
-  `assets/slides.js` (everything on the page).
+  pop-ups, uploads, offline note, fast reopen, singleTask, lock timing, start
+  over), `Slides.kt` (the 🖼 button and "Kindroid+ 💕" pop-up; the page
+  bridge; the hidden gallery pass), `Lock.kt` (app lock), `MyPictures.kt`
+  (own pictures), `Ai.kt` and `Ideas.kt` (✨ ideas with the owner's own AI key),
+  and `assets/slides.js` (everything on the page).
 - Kindroid's real site is **kindroid.ai** (the owner said kindroid.com; both
   are kept in the app). Login is by email code; "Sign in with Google" is
   blocked by Google inside apps.
@@ -59,6 +59,20 @@ names come from code; nothing was checked against a live account.
   api.kindroid.ai/v1/update-info {ai_id, current_scene}). Filled with the
   native value setter + an "input" event.
 - Sheets are `[role=dialog]` / `[aria-modal]` and add no history entry.
+- Kin settings ("Personality" tab, sheet on the chat page): React-controlled
+  textareas by id, no auto-save ("Save Personality" footer, POST
+  v1/update-info with the changed fields): kin-backstory-v2 (Personality,
+  2500 subscriber / 2000), kin-memory-v2 (Key Memories, 1000 / 500),
+  kin-developed-self-v2 (800), kin-durable-facts-v2 (1200),
+  kin-ongoing-context-v2 (800), kin-directive-v2 (250),
+  kin-example-message-v2 (750), kin-additional-context-v2 (5000 / 2500),
+  kin-scene-v2 (160), kin-call-directive-v2, kin-away-directive-v2.
+- Message box: `<textarea class="…_input" aria-label="Message" maxlength=4000>`;
+  on phones Enter is a newline, sending is the right-hand button ("Send
+  message"). The wand ("Suggest a message") is Kindroid's own reply suggestion.
+- VideoSelfies: video_url (+ image_url poster), same "!enc:" + path; mp4/webm on
+  storage.kindroid.ai with CORS and range requests. The owner's Kins had none
+  (Nov 2026), so videos are untested against real data.
 - Message bubbles (CSS module, e.g. `DSWNqq_bubble`): `…_bubble-self`
   (background `var(--chat-message-color-self, var(--color-cta))`, #964f43 dark)
   and `…_bubble-other` (`var(--chat-message-color-other,
@@ -110,18 +124,53 @@ only in a Kin's chat, sits at the right edge and can be dragged up or down.
 Tested in headless Chromium on a pretend chat page (fake Firestore, CryptoJS
 values, md5 against Node), not against the real site.
 
-## ✨ Scene ideas (owner's own AI key)
+## What the slideshow shows (build 9)
+
+Each Kin's photos ("Selfies") and video selfies ("VideoSelfies") are read
+newest first in one go (no per-order lists; "oldest" turns the list round),
+plus my pictures. Items are `{kind: photo|video, url, poster, key, at}`;
+`itemsFor` picks what the "Show" choice (photos / videos / my pictures) and
+"⭐ Favorites only" allow (no favorites starred: all show), sorted by `at`.
+A video slide is a muted, looping `<video>` in the layer (poster as its
+background), loaded to `canplay` first (15 s at most), shown at least one play
+(up to a minute); the old layer's video is stopped and taken out after the
+fade. Favorites: `localStorage kp-favs:<kin>` (keys are the picture's own
+address); `__kpOpenFavorites` is a page overlay (role=dialog, so the 🖼 button
+hides and back = Escape closes it) with every item, tap to star;
+`__kpStarCurrent` stars the one showing. My pictures (`MyPictures.kt`): picked
+with the Photo Picker (Android 13+) or the file picker, copied into
+files/mine/<uuid>.jpg (≤ 2048 px, turned upright), served to the page by
+`shouldInterceptRequest` at https://kindroid.ai/__kindroidplus/mine/<name>,
+listed through `bridge.myPictures()` (re-read when `mineGen` changes).
+
+## 🔒 App lock (`Lock.kt`)
+
+PIN (4-12 numbers; a saved one opens as soon as its length is typed), pattern
+(3x3 dots, at least 4) or password (at least 4 characters, NFC). Only a salted
+PBKDF2-HMAC-SHA256 hash (120,000 rounds) in prefs "lock". Five wrong tries:
+wait 30 s, doubling up to 5 min (kept across restarts). It locks at start and
+when the app comes back after being away (right away, or after 1 / 5 minutes),
+not after the app's own pickers (`awayForPicker`). The lock screen is a view on
+top of everything; pop-up windows can't open over it; with a lock the
+recent-apps picture is hidden (Android 13+). "Forgot?" = start over: clears the
+page's storage, cookies, WebStorage, all prefs and my pictures, then recreates
+(the Kindroid account is untouched; log in again).
+
+## ✨ Ideas (owner's own AI key)
 
 The owner picks Claude, ChatGPT, Gemini, Grok or DeepSeek and pastes a key
 (prefs "ai", app-only storage, allowBackup off; checked by listing models,
-which costs nothing). A "✨ Ideas" button floats over the scene box's corner
-(added to `document.body`, not inside React's elements; pointer-events auto and
-stopPropagation so a modal sheet doesn't close or swallow the tap); it sends
-the Kin's name (header `…_name`), the box text and the last 6 messages to
-`SceneIdeas`, which asks the AI for one scene of at most 150 characters
-(`SYSTEM`, Kindroid's own description of the box), `tidy`s it to ≤ 160, and
-"Use it" fills the box (`__kpSetScene`); the owner still taps Kindroid's Save.
-Also reachable from the 🖼 pop-up ("Write a scene ✨", "AI: …").
+which costs nothing). Buttons float over Kindroid's boxes (added to
+`document.body`, not inside React's elements; pointer-events auto and
+stopPropagation so a modal sheet doesn't close or swallow the tap; with a sheet
+open only its own boxes get one): "✨ Ideas" on the scene box and the Kin's
+settings (`FIELDS_BY_ID`, limit from the box's own maxlength), "💬 What to
+say?" above the message box. The context (`ideaContext`: Kin name, the box's
+text, last 6 or 10 messages, the Kin's other settings) goes to `Ideas.kt`:
+scene → one scene ≤ 150 chars; field → the whole box text (improved if it had
+some, paragraphs kept, ≤ 90% of the limit); reply → three replies to tap. "Use
+it" fills the box (`__kpPut(text, kind)`); Kindroid's Save / Send still decide.
+Also from the 🖼 pop-up ("Write a scene ✨", "AI: …").
 `Ai.kt`: plain HttpURLConnection, never through the page. Claude: Messages API,
 `claude-opus-5-5`, effort low, `fallbacks: "default"` with beta
 `server-side-fallback-2026-07-01`, anthropic-version 2026-10-21, refusal →
