@@ -118,7 +118,9 @@ words get a 1-2 px black outline all round, a big dark glow hugging them and
 weight 600, and the slideshow picture is a little darker (`brightness(0.8)` on
 `dim`, on top of Kindroid's own blur), since white words were hard to read on
 bright skin (owner, builds 16 and 17); a dark radial "cloud" behind the box was
-tried and looked like a smudge);
+tried and looked like a smudge). With any see-through choice (not Solid) the
+owner's own words are mint green (#7dff9b) and the Kin's soft pink (#ff8fc8),
+on the bubble and its p/span/em/i/strong/b/a (owner's ask, build 18);
 no blur, the owner found the blur made it look blurry):
 a <style id="kp-bubbles">
 that mixes the bubble's own colour with transparent, matched by

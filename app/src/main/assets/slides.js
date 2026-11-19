@@ -929,6 +929,9 @@
   // around them so they stay readable on any picture.
   var BUBBLES = {glass: {keep: 55, shadow: 0.45}, clear: {keep: 25, shadow: 0.7}, none: {keep: 0, shadow: 0.95}};
 
+  var SELF_INK = '#7dff9b';  // mint green: the owner's own messages
+  var KIN_INK = '#ff8fc8';   // soft pink: the Kin's messages
+
   function bubbleCss(b) {
     var rule = function (side, color) {
       // Invisible: no box, but white words on a bright picture were hard to read (owner's
@@ -945,8 +948,13 @@
         : 'text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000,' +
           '-2px 0 0 rgba(0,0,0,.8),2px 0 0 rgba(0,0,0,.8),0 -2px 0 rgba(0,0,0,.8),0 2px 0 rgba(0,0,0,.8),' +
           '0 0 4px rgba(0,0,0,.95),0 0 10px rgba(0,0,0,.9),0 0 18px rgba(0,0,0,.75),0 0 30px rgba(0,0,0,.55);';
-      return '[class*="_bubble-' + side + '"]:not([class*="_bubble-bare"]):not([class*="_bubble-wrap"]){' + box +
-        '-webkit-backdrop-filter:none !important;backdrop-filter:none !important;' + glow + '}';
+      // The owner's colours (with the see-through boxes): their own words green, the Kin's pink.
+      var ink = side === 'self' ? SELF_INK : KIN_INK;
+      var bubble = '[class*="_bubble-' + side + '"]:not([class*="_bubble-bare"]):not([class*="_bubble-wrap"])';
+      return bubble + '{' + box + '-webkit-backdrop-filter:none !important;backdrop-filter:none !important;' + glow +
+        'color:' + ink + ' !important;}' +
+        [' p', ' span', ' em', ' i', ' strong', ' b', ' a'].map(function (t) { return bubble + t; }).join(',') +
+        '{color:' + ink + ' !important;}';
     };
     return rule('other', 'var(--chat-message-color-other, var(--chat-message-surface-other, #1b1a1c))') +
       rule('self', 'var(--chat-message-color-self, var(--color-cta, #964f43))');
