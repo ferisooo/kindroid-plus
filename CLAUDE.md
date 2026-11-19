@@ -114,9 +114,11 @@ hides and back runs `__kpCloseSheet` (Escape, then a close button, then
 history.back) instead of leaving the chat. WebView debugging is turned off.
 **See-through message boxes** (drop-down "Boxes": Solid / See-through 55%
 (default) / Very see-through 25% / Invisible (no colour, edge or shadow; the
-words get a 1 px dark outline all round, a dark glow hugging them and weight
-500, since plain white words were hard to read on bright skin (owner, build
-16); a dark radial "cloud" behind the box was tried and looked like a smudge);
+words get a 1-2 px black outline all round, a big dark glow hugging them and
+weight 600, and the slideshow picture is a little darker (`brightness(0.8)` on
+`dim`, on top of Kindroid's own blur), since white words were hard to read on
+bright skin (owner, builds 16 and 17); a dark radial "cloud" behind the box was
+tried and looked like a smudge);
 no blur, the owner found the blur made it look blurry):
 a <style id="kp-bubbles">
 that mixes the bubble's own colour with transparent, matched by

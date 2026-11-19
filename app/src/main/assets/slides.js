@@ -693,14 +693,17 @@
    * shows, so Kindroid's own picture never peeks through ours (the owner saw a faint "other
    * selfie" when the whole box was see-through).
    */
-  function matchKindroid() {
+  function matchKindroid(cfg) {
     var theirs = null, kids = box.parentNode.children;
     for (var i = 0; i < kids.length; i++) if (kids[i] !== box && kids[i].style && kids[i].style.backgroundImage) theirs = kids[i];
     var cs = theirs ? getComputedStyle(theirs) : null;
     box.style.opacity = '1';
     box.style.filter = '';
     dim.style.opacity = cs ? cs.opacity : '1';
-    dim.style.filter = cs && cs.filter && cs.filter !== 'none' ? cs.filter : '';
+    var filter = cs && cs.filter && cs.filter !== 'none' ? cs.filter : '';
+    // Invisible message boxes: the picture a little darker, so the white words stand out.
+    if (cfg && cfg.bubbles === 'none') filter = (filter + ' brightness(0.8)').trim();
+    dim.style.filter = filter;
   }
 
   function shuffle(a) {
@@ -934,11 +937,14 @@
       // where the words don't fill it.)
       var box = b.keep > 0
         ? 'background:color-mix(in srgb, ' + color + ' ' + b.keep + '%, transparent) !important;'
-        : 'background:transparent !important;border-color:transparent !important;box-shadow:none !important;font-weight:500 !important;';
+        : 'background:transparent !important;border-color:transparent !important;box-shadow:none !important;font-weight:600 !important;';
+      // Still a bit hard to see (owner, build 17): a thicker outline (2 px) and a bigger glow;
+      // the picture behind also gets a little darker with Invisible (see matchKindroid).
       var glow = b.keep > 0
         ? 'text-shadow:0 1px 3px rgba(0,0,0,' + b.shadow + ');'
-        : 'text-shadow:-1px -1px 0 rgba(0,0,0,.85),1px -1px 0 rgba(0,0,0,.85),-1px 1px 0 rgba(0,0,0,.85),1px 1px 0 rgba(0,0,0,.85),' +
-          '0 0 3px rgba(0,0,0,.95),0 0 8px rgba(0,0,0,.85),0 0 16px rgba(0,0,0,.6),0 0 24px rgba(0,0,0,.4);';
+        : 'text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000,' +
+          '-2px 0 0 rgba(0,0,0,.8),2px 0 0 rgba(0,0,0,.8),0 -2px 0 rgba(0,0,0,.8),0 2px 0 rgba(0,0,0,.8),' +
+          '0 0 4px rgba(0,0,0,.95),0 0 10px rgba(0,0,0,.9),0 0 18px rgba(0,0,0,.75),0 0 30px rgba(0,0,0,.55);';
       return '[class*="_bubble-' + side + '"]:not([class*="_bubble-bare"]):not([class*="_bubble-wrap"]){' + box +
         '-webkit-backdrop-filter:none !important;backdrop-filter:none !important;' + glow + '}';
     };
@@ -1439,7 +1445,7 @@
     }
     if (!items.length) return;
     if (!ensureLayers()) return;
-    matchKindroid();
+    matchKindroid(cfg);
     darkenForMenu(state.peeked);
     if (state.peeked) return;  // no new pictures while the menu covers them
     if (!state.busy && Date.now() >= state.nextAt) {
