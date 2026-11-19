@@ -928,12 +928,17 @@
 
   function bubbleCss(b) {
     var rule = function (side, color) {
+      // Invisible: no box, but white words on a bright picture were hard to read (owner's
+      // screenshot), so they get a dark outline all round like subtitles, a dark glow that hugs
+      // the words, and slightly bolder letters. (A dark cloud behind the box looked like a smudge
+      // where the words don't fill it.)
       var box = b.keep > 0
         ? 'background:color-mix(in srgb, ' + color + ' ' + b.keep + '%, transparent) !important;'
-        : 'background:transparent !important;border-color:transparent !important;box-shadow:none !important;';
+        : 'background:transparent !important;border-color:transparent !important;box-shadow:none !important;font-weight:500 !important;';
       var glow = b.keep > 0
         ? 'text-shadow:0 1px 3px rgba(0,0,0,' + b.shadow + ');'
-        : 'text-shadow:0 0 2px rgba(0,0,0,.95),0 1px 4px rgba(0,0,0,.9),0 0 10px rgba(0,0,0,.6);';
+        : 'text-shadow:-1px -1px 0 rgba(0,0,0,.85),1px -1px 0 rgba(0,0,0,.85),-1px 1px 0 rgba(0,0,0,.85),1px 1px 0 rgba(0,0,0,.85),' +
+          '0 0 3px rgba(0,0,0,.95),0 0 8px rgba(0,0,0,.85),0 0 16px rgba(0,0,0,.6),0 0 24px rgba(0,0,0,.4);';
       return '[class*="_bubble-' + side + '"]:not([class*="_bubble-bare"]):not([class*="_bubble-wrap"]){' + box +
         '-webkit-backdrop-filter:none !important;backdrop-filter:none !important;' + glow + '}';
     };
