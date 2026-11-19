@@ -1170,7 +1170,7 @@
 
   /**
    * The Kin's name from the chat's header: the innermost "…_name" element near the top (an
-   * outer one holds the name twice, which read "avaava"), and a name that's the same word twice
+   * outer one holds the name twice), and a name that's the same word twice
    * is halved.
    */
   function kinName() {

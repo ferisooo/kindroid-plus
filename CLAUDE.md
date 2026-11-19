@@ -185,7 +185,7 @@ or 9 replies) and asks for something clearly different: on DeepSeek the four
 tries came out nearly the same (build 8). DeepSeek also gets temperature 1.3
 (only DeepSeek: OpenAI's newer models, Gemini 3.6+ and Claude refuse sampling
 settings). The Kin's name is the innermost visible `…_name` in the header
-(an outer one read "avaava").
+(an outer one read the name twice).
 
 Fixed after the PC session's build 10 and 15 tests: the ✨ pill covered text in
 big boxes (padding-bottom didn't help in a box that scrolls), so it now sits in
